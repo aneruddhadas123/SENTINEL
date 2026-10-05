@@ -20,7 +20,6 @@ import {
   Bot,
   BrainCircuit,
   CalendarClock,
-  Check,
   ChevronRight,
   Clock3,
   Download,
@@ -107,13 +106,6 @@ const navigation: Array<{ id: PortalView; label: string; icon: IconType }> = [
   { id: "insights", label: "AI Insights", icon: BrainCircuit },
   { id: "events", label: "Events", icon: CalendarClock },
   { id: "settings", label: "Settings", icon: Settings },
-];
-
-const initialEvents: EventRecord[] = [
-  { id: "EVT-892", date: "Sep 12", time: "2:32 PM", severity: "Crisis", peak: 94, duration: "42 min", trigger: "Rapid signal rise", recovery: "28 min" },
-  { id: "EVT-891", date: "Sep 12", time: "9:15 AM", severity: "Elevated", peak: 72, duration: "15 min", trigger: "Sustained signal change", recovery: "8 min" },
-  { id: "EVT-890", date: "Sep 11", time: "6:40 PM", severity: "Elevated", peak: 78, duration: "22 min", trigger: "HR and stress-score pattern", recovery: "12 min" },
-  { id: "EVT-889", date: "Sep 11", time: "3:06 PM", severity: "Resolved", peak: 66, duration: "9 min", trigger: "Elevated heart rate", recovery: "6 min" },
 ];
 
 const initialMessages: Message[] = [
@@ -358,7 +350,7 @@ function OverviewView({
         <Metric label="Current stress score" value={connected ? latest.stressScore : "—"} unit={connected ? "/ 100" : undefined} note={connected ? `${stateLabel(latest.state)} · updated now` : "Connect device to view"} icon={Activity} />
         <Metric label="Heart rate" value={connected ? latest.heartRate : "—"} unit={connected ? "BPM" : undefined} note={connected ? `12-reading avg. ${averageHr} BPM` : "Connect device to view"} icon={HeartPulse} tone="rose" />
         <Metric label="Stress score" value={connected ? latest.stressScore : "—"} unit={connected ? "/ 100" : undefined} note={connected ? `${latest.stressLevel || "RELAXED"} · updated now` : "Connect device to view"} icon={Activity} />
-        <Metric label="Events this week" value="12" note="2 more than last week" icon={CalendarClock} tone="amber" />
+        <Metric label="Events this week" value={events.length} note={events.length ? "Recorded in this session" : "No recorded events"} icon={CalendarClock} tone="amber" />
       </div>
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.75fr]">
         <Panel className="p-6 sm:p-7">
@@ -383,25 +375,13 @@ function OverviewView({
         </Panel>
         <Panel className="overflow-hidden">
           <div className="border-b border-sentinel-line p-6">
-            <p className="text-sm font-semibold text-sentinel-muted">Today's plan</p>
+            <p className="text-sm font-semibold text-sentinel-muted">Today&apos;s plan</p>
             <h2 className="mt-1 font-display text-xl font-extrabold">Care checkpoints</h2>
           </div>
           <div className="space-y-1 p-3">
-            {[
-              { time: "8:03 AM", label: "Stress sensor ready", done: true },
-              { time: "2:15 PM", label: "Scheduled quiet break", done: true },
-              { time: "7:30 PM", label: "Evening check-in", done: false },
-            ].map((item) => (
-              <div key={item.label} className="flex items-center gap-3 rounded-xl p-3">
-                <span className={cn("grid size-8 place-items-center rounded-full", item.done ? "bg-sentinel-soft text-sentinel-teal" : "bg-slate-100 text-slate-400")}>
-                  {item.done ? <Check className="size-4" /> : <Clock3 className="size-4" />}
-                </span>
-                <div>
-                  <p className="text-sm font-bold">{item.label}</p>
-                  <p className="text-xs text-sentinel-muted">{item.time}</p>
-                </div>
-              </div>
-            ))}
+            <div className="rounded-xl bg-slate-50 p-4 text-sm text-sentinel-muted">
+              No care checkpoints configured yet.
+            </div>
           </div>
         </Panel>
       </div>
@@ -731,7 +711,7 @@ function InsightsView({
           ) : (
             <div className="mt-6 flex flex-col items-center justify-center py-8 text-center gap-3">
               <Sparkles className="size-8 text-sentinel-teal/40" />
-              <p className="text-sm text-sentinel-muted">Press "Run Assessment Now" to get an AI evaluation of your current wellness signals.</p>
+              <p className="text-sm text-sentinel-muted">Press &quot;Run Assessment Now&quot; to get an AI evaluation of your current wellness signals.</p>
             </div>
           )}
         </Panel>
@@ -866,7 +846,13 @@ function EventTable({ events, compact = false }: { events: EventRecord[]; compac
           </TableRow>
         </TableHeader>
         <TableBody>
-          {events.map((event) => (
+          {events.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={compact ? 5 : 6} className="h-28 text-center text-sm text-sentinel-muted">
+                No events recorded yet. Connect a device to begin collecting data.
+              </TableCell>
+            </TableRow>
+          ) : events.map((event) => (
             <TableRow key={event.id}>
               <TableCell>
                 <p className="text-sm font-bold">{event.date}</p>
@@ -903,6 +889,9 @@ function EventTable({ events, compact = false }: { events: EventRecord[]; compac
 
 // ── Events View ───────────────────────────────────────────────────────────────
 function EventsView({ events, onExport }: { events: EventRecord[]; onExport: () => void }) {
+  const averageRecovery = events.length
+    ? Math.round(events.reduce((sum, event) => sum + (Number.parseInt(event.recovery, 10) || 0), 0) / events.length)
+    : null;
   return (
     <>
       <PageHeading
@@ -916,18 +905,12 @@ function EventsView({ events, onExport }: { events: EventRecord[]; onExport: () 
         }
       />
       <div className="grid gap-4 md:grid-cols-3">
-        <Metric label="Crisis events" value="12" note="2 more than last week" icon={Activity} tone="rose" />
-        <Metric label="Average recovery" value="18" unit="min" note="4 min faster than average" icon={Clock3} tone="amber" />
+        <Metric label="Crisis events" value={events.filter((event) => event.severity === "Crisis").length} note="No recorded events" icon={Activity} tone="rose" />
+        <Metric label="Average recovery" value={averageRecovery ?? "—"} unit={averageRecovery === null ? undefined : "min"} note={averageRecovery === null ? "No recovery data" : "Across recorded events"} icon={Clock3} tone="amber" />
         <Panel className="p-5 sm:p-6">
           <p className="text-sm font-semibold text-sentinel-muted">Event frequency</p>
-          <div className="mt-6 flex h-12 items-end gap-2">
-            {[18, 27, 15, 37, 48, 65, 33].map((height, index) => (
-              <span key={index} className={cn("anime-metric flex-1 rounded-t-sm", index === 5 ? "bg-sentinel-teal/55" : "bg-blue-100")} style={{ height: `${height}%` }} />
-            ))}
-          </div>
-          <div className="mt-2 flex justify-between text-[10px] text-sentinel-muted">
-            <span>Mon</span>
-            <span>Sun</span>
+          <div className="mt-6 flex h-12 items-center justify-center rounded-xl bg-slate-50 text-sm text-sentinel-muted">
+            No data yet
           </div>
         </Panel>
       </div>
@@ -1597,7 +1580,7 @@ function AuthDialog({
             <div className="text-center mt-1">
               {tab === "signin" ? (
                 <button type="button" className="text-xs text-sentinel-teal font-semibold hover:underline" onClick={() => setTab("register")}>
-                  Don't have an account? Click here to register
+                  Don&apos;t have an account? Click here to register
                 </button>
               ) : (
                 <button type="button" className="text-xs text-sentinel-teal font-semibold hover:underline" onClick={() => setTab("signin")}>
@@ -1613,18 +1596,27 @@ function AuthDialog({
 }
 
 // ── Fallback assistant ────────────────────────────────────────────────────────
-function fallbackAssistant(question: string, latest: SensorReading) {
+function fallbackAssistant(question: string, latest: SensorReading | null) {
   const lower = question.toLowerCase();
+  if (!latest) {
+    if (lower.includes("de-escal") || lower.includes("help") || lower.includes("calm")) {
+      return "Start with the person's established care plan: reduce noise and demands, offer a quieter space, check comfort needs, and give them time to respond. If there is immediate danger, follow the safety plan and contact local emergency services.";
+    }
+    if (lower.includes("baseline") || lower.includes("summar") || lower.includes("trend") || lower.includes("data")) {
+      return "There is not enough recorded telemetry to evaluate a baseline or trend yet. Pair the monitoring device and allow it to collect several readings before drawing conclusions; a single reading should not be treated as a diagnosis.";
+    }
+    return "I can help interpret patterns, but there is no live telemetry available yet. Connect the monitoring device first, then ask me about a trend, a change from baseline, or general support strategies.";
+  }
   if (lower.includes("baseline")) {
-    return `The latest hardware stress score is ${latest.stressScore}/100, with heart rate ${latest.heartRate} BPM and status ${latest.stressLevel || "RELAXED"}.`;
+    return `A baseline cannot be confirmed from one live reading. The current signal is ${latest.stressLevel || "relaxed"}, so the useful next step is to collect several readings under ordinary conditions and compare the pattern rather than reacting to one number.`;
   }
   if (lower.includes("12 hours") || lower.includes("summar")) {
-    return "Over the recent recording period, physiological readings were mostly within the personalized calm range. Two elevated intervals resolved after sensory relief, and recovery was faster following a planned quiet break.";
+    return "I do not have enough historical readings to summarize the last 12 hours. Continue monitoring for a longer window so we can distinguish a sustained pattern from a brief change.";
   }
   if (lower.includes("de-escal")) {
     return "Consider your established care plan first: reduce surrounding noise, check comfort, offer water, and allow a quiet rest space. If there is immediate danger, follow your safety protocol.";
   }
-  return `The current telemetry shows a hardware stress score of ${latest.stressScore}/100 (${stateLabel(latest.state).toLowerCase()}) with HR ${latest.heartRate} BPM and status ${latest.stressLevel || "RELAXED"}. Continue observing trends.`;
+  return `The current signal is classified as ${stateLabel(latest.state).toLowerCase()}, but that classification is only a screening cue—not an explanation of how the person feels or why the change occurred. Look for context, compare it with the person's established baseline, and follow their care plan if they appear uncomfortable.`;
 }
 
 // ── Main App Root ─────────────────────────────────────────────────────────────
@@ -1636,7 +1628,7 @@ export default function SentinelApp() {
   const [connection, setConnection] = useState<PulseGuardConnection | null>(null);
   const [monitoring, setMonitoring] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Local buffer");
-  const [events, setEvents] = useState<EventRecord[]>(initialEvents);
+  const [events, setEvents] = useState<EventRecord[]>([]);
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiStatus, setAiStatus] = useState("AI Wellness Assistant ready");
@@ -1868,7 +1860,7 @@ export default function SentinelApp() {
       } catch {
         setMessages((current) => [
           ...current,
-          { id: `assistant-${Date.now()}`, role: "assistant", text: fallbackAssistant(question, latestRef.current ?? { heartRate: 0, gsr: 0, score: 0, stressScore: 0, state: "calm", source: "demo", capturedAt: Date.now() } as SensorReading) },
+          { id: `assistant-${Date.now()}`, role: "assistant", text: fallbackAssistant(question, latestRef.current) },
         ]);
         setAiStatus("Safe fallback response");
       } finally {
@@ -1910,7 +1902,7 @@ export default function SentinelApp() {
 
   // Safe fallback for when no reading is available yet
   const safeLatest: SensorReading = latest ?? {
-    heartRate: 0, gsr: 0, score: 0, stressScore: 0, state: "calm" as ArousalState, source: "demo", capturedAt: Date.now(),
+    heartRate: 0, gsr: 0, score: 0, stressScore: 0, state: "calm" as ArousalState, source: "demo", capturedAt: 0,
   };
 
   return (

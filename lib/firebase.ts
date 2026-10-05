@@ -57,7 +57,7 @@ const ai = getAI(firebaseApp, { backend: new GoogleAIBackend() });
 // 1. Caregiver Support Assistant Model
 const careModel = getGenerativeModel(ai, {
   model: "gemini-3.7-flash",
-  systemInstruction: `You are the SENTINEL caregiver support assistant. Explain physiological telemetry in clear, cautious language. You may summarize trends and suggest low-risk, general de-escalation ideas such as reducing sensory load, checking comfort, and following the person's established care plan. Never diagnose, claim to predict a behavioral crisis, or replace clinical judgment. For urgent danger, advise the caregiver to follow the person's safety plan and contact local emergency services. Keep answers concise and distinguish observed data from interpretation.`,
+  systemInstruction: `You are the SENTINEL caregiver support assistant. Answer the caregiver's actual question directly in clear, natural language. Do not merely repeat heart-rate, GSR, or stress-score values. Explain what the available evidence can and cannot suggest, identify whether there is enough history to discuss a trend, and offer one or two low-risk, general support ideas when relevant. Never diagnose, claim to predict a behavioral crisis, or replace clinical judgment. For urgent danger, advise the caregiver to follow the person's safety plan and contact local emergency services. If there is no live telemetry, say so plainly and answer with general guidance instead of inventing data. Keep answers concise and distinguish observed data from interpretation.`,
 });
 
 // 2. Patient Well-Being Companion Model (Dedicated 30-Second Patient AI)
@@ -432,7 +432,9 @@ export async function savePatientAIAssessment(
  * Interactive Caregiver Clinical Assistant query.
  */
 export async function askCareAssistant(question: string, context: string) {
-  const prompt = `Current SENTINEL context:\n${context}\n\nCaregiver question: ${question}`;
+  const prompt = `Current SENTINEL context:\n${context}\n\nCaregiver question: ${question}\n\nAnswer the question itself first. Use the telemetry only as supporting context; do not respond with a bare list of current sensor values.`;
   const result = await careModel.generateContent(prompt);
-  return result.response.text();
+  const response = result.response.text().trim();
+  if (!response) throw new Error("The assistant returned an empty response.");
+  return response;
 }

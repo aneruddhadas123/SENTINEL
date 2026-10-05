@@ -113,25 +113,6 @@ export function createHardwareReading(
   };
 }
 
-export function initialReadings(): SensorReading[] {
-  const heartRates = [71, 70, 72, 69, 73, 72, 75, 74, 72, 70, 68, 69, 71, 70, 68, 67, 69, 68, 67, 68, 69, 68, 67, 68];
-  const gsrValues = [1.05, 1.08, 1.02, 1.12, 1.09, 1.18, 1.15, 1.11, 1.07, 1.02, 0.98, 1.0, 1.03, 1.01, 0.96, 0.94, 0.98, 0.97, 0.95, 0.96, 0.99, 0.98, 0.96, 0.97];
-  const start = Date.now() - heartRates.length * 30_000;
-  return heartRates.map((heartRate, index) => {
-    const score = Math.max(22, Math.min(58, 40 + Math.round((heartRate - 70) * 2 + (gsrValues[index] - 1) * 38)));
-    return {
-      id: `seed-${index}`,
-      capturedAt: start + index * 30_000,
-      heartRate,
-      gsr: gsrValues[index],
-      score,
-      stressScore: score,
-      state: classifyArousal(score),
-      source: "demo",
-    };
-  });
-}
-
 export function stateLabel(state: ArousalState) {
   return state === "calm" ? "Calm" : state === "elevated" ? "Elevated" : "Crisis";
 }
