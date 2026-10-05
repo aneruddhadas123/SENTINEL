@@ -1,0 +1,129 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "../vendor/shadcn-tailwind-4.13.0.css";
+
+:root {
+  --background: #f5f8fa;
+  --foreground: #14222d;
+  --card: #ffffff;
+  --card-foreground: #14222d;
+  --popover: #ffffff;
+  --popover-foreground: #14222d;
+  --primary: #087067;
+  --primary-foreground: #ffffff;
+  --secondary: #e5f7f4;
+  --secondary-foreground: #075a54;
+  --muted: #edf2f4;
+  --muted-foreground: #687781;
+  --accent: #d7f6f0;
+  --accent-foreground: #075a54;
+  --destructive: #dc3446;
+  --border: #dfe8eb;
+  --input: #dfe8eb;
+  --ring: #0c9488;
+  --chart-1: #0c9488;
+  --chart-2: #eb5b69;
+  --chart-3: #f0a73c;
+  --chart-4: #3779a7;
+  --chart-5: #7d66b4;
+  --radius: 0.8rem;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #14222d;
+  --sidebar-primary: #087067;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #d7f6f0;
+  --sidebar-accent-foreground: #075a54;
+  --sidebar-border: #dfe8eb;
+  --sidebar-ring: #0c9488;
+  --sentinel-canvas: #f5f8fa;
+  --sentinel-ink: #14222d;
+  --sentinel-muted: #687781;
+  --sentinel-line: #dfe8eb;
+  --sentinel-teal: #0c9488;
+  --sentinel-teal-dark: #075a54;
+  --sentinel-mint: #d7f6f0;
+  --sentinel-soft: #e9f8f6;
+  --sentinel-alert: #dc3446;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sentinel-canvas: var(--sentinel-canvas);
+  --color-sentinel-ink: var(--sentinel-ink);
+  --color-sentinel-muted: var(--sentinel-muted);
+  --color-sentinel-line: var(--sentinel-line);
+  --color-sentinel-teal: var(--sentinel-teal);
+  --color-sentinel-teal-dark: var(--sentinel-teal-dark);
+  --color-sentinel-mint: var(--sentinel-mint);
+  --color-sentinel-soft: var(--sentinel-soft);
+  --color-sentinel-alert: var(--sentinel-alert);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-display: Manrope, Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--sentinel-canvas); }
+body { margin: 0; background: var(--background); color: var(--foreground); font-family: var(--font-sans); }
+button, a { -webkit-tap-highlight-color: transparent; }
+
+::selection { background: #bcebe4; color: #075a54; }
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(12, 148, 136, .28);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .sentinel-reveal { animation: sentinel-rise .65s cubic-bezier(.2,.8,.2,1) both; }
+  .sentinel-grid > :nth-child(2) { animation-delay: 80ms; }
+  @keyframes sentinel-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+}
+
+@media (max-width: 640px) {
+  .sentinel-reveal { animation: none; }
+}
