@@ -80,23 +80,14 @@ import {
   type PulseGuardConnection,
   type PulseGuardSnapshot,
 } from "@/lib/bluetooth";
-import type { DashboardInsight, PatientAIAssessment, UserProfile, UserRole } from "@/lib/firebase";
+import type { DashboardInsight, PatientAIAssessment, RealtimeEvent, UserProfile, UserRole } from "@/lib/firebase";
 
 // ── Navigation types ──────────────────────────────────────────────────────────
 type PortalView = "overview" | "live" | "insights" | "events" | "settings";
 type PortalMode = "landing" | "portal";
 type FirebaseAuthState = User | null;
 type Message = { id: string; role: "assistant" | "user"; text: string };
-type EventRecord = {
-  id: string;
-  date: string;
-  time: string;
-  severity: "Crisis" | "Elevated" | "Resolved" | "System";
-  peak: number;
-  duration: string;
-  trigger: string;
-  recovery: string;
-};
+type EventRecord = RealtimeEvent;
 type IconType = ComponentType<{ className?: string; strokeWidth?: number }>;
 
 const navigation: Array<{ id: PortalView; label: string; icon: IconType }> = [
@@ -355,15 +346,26 @@ function DeviceBar({
 function OverviewView({
   events,
   insights,
+  historicalReadings,
+  activeSessionStartedAt,
   onNavigate,
 }: {
   events: EventRecord[];
   insights: DashboardInsight[];
+  historicalReadings: SensorReading[];
+  activeSessionStartedAt: number | null;
   onNavigate: (view: PortalView) => void;
 }) {
+  // Overview deliberately excludes an active session. Current metrics remain
+  // exclusive to Live Monitoring, while these graphs stay historical.
+  const completedReadings = activeSessionStartedAt
+    ? historicalReadings.filter((reading) => reading.capturedAt < activeSessionStartedAt)
+    : historicalReadings;
+  const historyAverage = (values: number[]) => Math.round(values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length));
   const sessionCount = insights.length;
-  const averageStress = sessionCount ? Math.round(insights.reduce((sum, insight) => sum + insight.averageStressScore, 0) / sessionCount) : 0;
-  const peakStress = sessionCount ? Math.max(...insights.map((insight) => insight.peakStressScore)) : 0;
+  const averageHeartRate = completedReadings.length ? historyAverage(completedReadings.map((reading) => reading.heartRate)) : 0;
+  const averageStress = completedReadings.length ? historyAverage(completedReadings.map((reading) => reading.stressScore)) : 0;
+  const peakStress = completedReadings.length ? Math.max(...completedReadings.map((reading) => reading.stressScore)) : 0;
   const monitoredMs = insights.reduce((sum, insight) => sum + Math.max(0, insight.endedAt - insight.startedAt), 0);
   const latestInsight = insights[0];
   return (
@@ -378,32 +380,58 @@ function OverviewView({
           </Button>
         }
       />
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="Completed sessions" value={sessionCount} note={sessionCount ? "Saved monitoring sessions" : "Stop a session to create history"} icon={CalendarClock} />
-        <Metric label="Average session stress" value={sessionCount ? averageStress : "—"} unit={sessionCount ? "/ 100" : undefined} note="Across completed sessions" icon={Activity} tone="teal" />
-        <Metric label="Highest recorded stress" value={sessionCount ? peakStress : "—"} unit={sessionCount ? "/ 100" : undefined} note="Historical peak, not current" icon={Activity} tone="amber" />
+        <Metric label="Average heart rate" value={completedReadings.length ? averageHeartRate : "—"} unit={completedReadings.length ? "BPM" : undefined} note="Stored history, not current" icon={HeartPulse} tone="rose" />
+        <Metric label="Average stress score" value={completedReadings.length ? averageStress : "—"} unit={completedReadings.length ? "/ 100" : undefined} note="Stored history, not current" icon={Activity} tone="teal" />
+        <Metric label="Highest recorded stress" value={completedReadings.length ? peakStress : "—"} unit={completedReadings.length ? "/ 100" : undefined} note="Historical peak, not current" icon={Activity} tone="amber" />
         <Metric label="Time monitored" value={sessionCount ? formatSessionDuration(monitoredMs) : "—"} note="Across completed sessions" icon={Clock3} tone="blue" />
       </div>
-      <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.75fr]">
+      <div className="mt-5 grid gap-5 xl:grid-cols-2">
         <Panel className="p-6 sm:p-7">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-sm font-semibold text-sentinel-muted">Completed-session stress trend</p>
-              <h2 className="mt-1 font-display text-xl font-extrabold">
-                {sessionCount ? "Historical session averages" : "No completed sessions yet"}
-              </h2>
+              <p className="text-sm font-semibold text-sentinel-muted">Heart-rate history</p>
+              <h2 className="mt-1 font-display text-xl font-extrabold">Changes over completed sessions</h2>
             </div>
-            <span className="rounded-full bg-sentinel-soft px-3 py-1.5 text-xs font-bold text-sentinel-teal">Over time</span>
+            <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600">Historical</span>
           </div>
           <div className="mt-7">
-            {sessionCount > 1 ? (
-              <Sparkline id="overview" values={[...insights].reverse().map((insight) => insight.averageStressScore)} color="#0c9488" height={150} />
+            {completedReadings.length > 1 ? (
+              <Sparkline id="overview-heart" values={completedReadings.map((reading) => reading.heartRate)} color="#eb5b69" height={150} />
             ) : (
               <div className="flex h-[150px] items-center justify-center rounded-2xl bg-slate-50">
-                <p className="text-sm text-sentinel-muted">Stop a monitoring session to add an over-time trend</p>
+                <p className="text-sm text-sentinel-muted">Complete a session to add heart-rate history</p>
               </div>
             )}
           </div>
+          <p className="mt-3 text-xs text-sentinel-muted">Earlier readings <span className="float-right">Most recent completed reading</span></p>
+        </Panel>
+        <Panel className="p-6 sm:p-7">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-sm font-semibold text-sentinel-muted">Stress-score history</p>
+              <h2 className="mt-1 font-display text-xl font-extrabold">Changes over completed sessions</h2>
+            </div>
+            <span className="rounded-full bg-sentinel-soft px-3 py-1.5 text-xs font-bold text-sentinel-teal">Historical</span>
+          </div>
+          <div className="mt-7">
+            {completedReadings.length > 1 ? (
+              <Sparkline id="overview-stress" values={completedReadings.map((reading) => reading.stressScore)} color="#0c9488" height={150} />
+            ) : (
+              <div className="flex h-[150px] items-center justify-center rounded-2xl bg-slate-50">
+                <p className="text-sm text-sentinel-muted">Complete a session to add stress-score history</p>
+              </div>
+            )}
+          </div>
+          <p className="mt-3 text-xs text-sentinel-muted">Earlier readings <span className="float-right">Most recent completed reading</span></p>
+        </Panel>
+      </div>
+      <div className="mt-5 grid gap-5 xl:grid-cols-[.72fr_1.28fr]">
+        <Panel className="p-6 sm:p-7">
+          <p className="text-sm font-semibold text-sentinel-muted">Historical monitoring time</p>
+          <p className="mt-2 font-display text-4xl font-extrabold tracking-[-.04em]">{sessionCount ? formatSessionDuration(monitoredMs) : "—"}</p>
+          <p className="mt-2 text-sm text-sentinel-muted">Across {sessionCount || "no"} completed monitoring session{sessionCount === 1 ? "" : "s"}.</p>
         </Panel>
         <Panel className="overflow-hidden">
           <div className="border-b border-sentinel-line p-6">
@@ -1177,6 +1205,8 @@ function PatientPortal({
   readings,
   events,
   dashboardInsights,
+  historicalReadings,
+  activeSessionStartedAt,
   connected,
   monitoring,
   storageStatus,
@@ -1202,6 +1232,8 @@ function PatientPortal({
   readings: SensorReading[];
   events: EventRecord[];
   dashboardInsights: DashboardInsight[];
+  historicalReadings: SensorReading[];
+  activeSessionStartedAt: number | null;
   connected: boolean;
   monitoring: boolean;
   storageStatus: string;
@@ -1370,6 +1402,8 @@ function PatientPortal({
             <OverviewView
               events={events}
               insights={dashboardInsights}
+              historicalReadings={historicalReadings}
+              activeSessionStartedAt={activeSessionStartedAt}
               onNavigate={setView}
             />
           )}
@@ -1648,6 +1682,8 @@ export default function SentinelApp() {
   const [monitoring, setMonitoring] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Local buffer");
   const [events, setEvents] = useState<EventRecord[]>([]);
+  const [historicalReadings, setHistoricalReadings] = useState<SensorReading[]>([]);
+  const [activeSessionStartedAt, setActiveSessionStartedAt] = useState<number | null>(null);
   const [dashboardInsights, setDashboardInsights] = useState<DashboardInsight[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -1701,16 +1737,21 @@ export default function SentinelApp() {
   // Firebase Auth Observer — on auth change, go to portal
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
+    let stopRealtimeTelemetry: (() => void) | undefined;
+    let stopRealtimeEvents: (() => void) | undefined;
     void import("@/lib/firebase")
       .then((firebase) => {
         unsubscribe = firebase.observeAuth((nextUser, nextProfile) => {
+          stopRealtimeTelemetry?.();
+          stopRealtimeEvents?.();
           setUser(nextUser);
           setProfile(nextProfile);
-          setStorageStatus(nextUser ? "Firestore sync enabled" : "Local buffer");
+          setStorageStatus(nextUser ? "Realtime Database sync enabled" : "Local buffer");
           if (nextUser) {
             setMode("portal");
-            void import("@/lib/firebase")
-              .then((firebase) => firebase.loadDashboardInsights(nextProfile?.patientId || nextUser.uid))
+            stopRealtimeTelemetry = firebase.subscribeToRealtimeTelemetry(setHistoricalReadings);
+            stopRealtimeEvents = firebase.subscribeToRealtimeEvents(setEvents);
+            void firebase.loadDashboardInsights(nextProfile?.patientId || nextUser.uid)
               .then((cloudInsights) => {
                 if (!cloudInsights.length) return;
                 setDashboardInsights((current) => {
@@ -1718,11 +1759,18 @@ export default function SentinelApp() {
                   return merged.sort((a, b) => b.endedAt - a.endedAt).slice(0, 24);
                 });
               });
+          } else {
+            setHistoricalReadings([]);
+            setEvents([]);
           }
         });
       })
       .catch(() => setStorageStatus("Local buffer"));
-    return () => unsubscribe?.();
+    return () => {
+      unsubscribe?.();
+      stopRealtimeTelemetry?.();
+      stopRealtimeEvents?.();
+    };
   }, []);
 
   // Anime.js Motion Scopes
@@ -1754,27 +1802,33 @@ export default function SentinelApp() {
     });
     if (reading.state !== "calm" && previousState.current === "calm") {
       const severity = reading.state === "crisis" ? "Crisis" : "Elevated";
+      const event: EventRecord = {
+        id: `EVT-${Date.now()}`,
+        date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+        time: formatTime(reading.capturedAt),
+        severity,
+        peak: reading.score,
+        duration: "Active",
+        trigger: "Live signal change",
+        recovery: "—",
+      };
       setEvents((current) => [
-        {
-          id: `EVT-${893 + current.length}`,
-          date: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          time: formatTime(reading.capturedAt),
-          severity,
-          peak: reading.score,
-          duration: "Active",
-          trigger: "Live signal change",
-          recovery: "—",
-        },
+        event,
         ...current,
       ]);
+      if (user) {
+        void import("@/lib/firebase")
+          .then((firebase) => firebase.saveRealtimeEvent(event))
+          .catch(() => setStorageStatus("Realtime Database sync unavailable"));
+      }
       toast.warning(`${severity} physiological change detected`, {
         description: "Check your comfort and follow your established care plan.",
       });
     }
     previousState.current = reading.state;
-  }, []);
+  }, [user]);
 
-  // Firestore Sync every 30s — only when in portal and user is logged in
+  // Sync an account-scoped historical sample every five seconds while live.
   useEffect(() => {
     if (mode !== "portal" || !monitoring) return;
     const interval = window.setInterval(() => {
@@ -1788,13 +1842,13 @@ export default function SentinelApp() {
       }
       if (user) {
         void import("@/lib/firebase")
-          .then((firebase) => firebase.saveTelemetrySample(reading, profile?.patientId || user.uid))
-          .then(() => setStorageStatus(`Synced ${formatTime(Date.now())}`))
-          .catch(() => setStorageStatus("Local buffer · sync unavailable"));
+          .then((firebase) => firebase.saveRealtimeTelemetrySample(reading))
+          .then(() => setStorageStatus(`Realtime DB synced ${formatTime(Date.now())}`))
+          .catch(() => setStorageStatus("Local buffer · Realtime Database unavailable"));
       }
-    }, 30_000);
+    }, 5_000);
     return () => window.clearInterval(interval);
-  }, [mode, monitoring, profile, user]);
+  }, [mode, monitoring, user]);
 
   // Manual save sample
   const handleSaveSample = useCallback(async () => {
@@ -1810,7 +1864,8 @@ export default function SentinelApp() {
     }
     try {
       const firebase = await import("@/lib/firebase");
-      await firebase.saveTelemetrySample(reading, profile?.patientId || user.uid);
+      await firebase.saveRealtimeTelemetrySample(reading);
+      void firebase.saveTelemetrySample(reading, profile?.patientId || user.uid);
       setStorageStatus(`Saved ${formatTime(Date.now())}`);
       toast.success("Stress reading recorded to cloud!", {
         description: `Saved: ${reading.heartRate} BPM, stress score ${reading.stressScore}/100.`,
@@ -1854,12 +1909,21 @@ export default function SentinelApp() {
     const startedAt = monitoringStartedAt.current;
     const endedAt = Date.now();
     monitoringStartedAt.current = null;
+    setActiveSessionStartedAt(null);
     if (!startedAt) return;
 
     const sessionReadings = sessionReadingsRef.current.filter((reading) => reading.capturedAt >= startedAt && reading.capturedAt <= endedAt);
     const provisionalInsight = createSessionSummary(sessionReadings, startedAt, endedAt);
     if (!provisionalInsight) return;
     sessionReadingsRef.current = [];
+
+    // Make the completed session available to the historical charts immediately;
+    // the Realtime Database subscription then keeps it synchronized per account.
+    setHistoricalReadings((current) => {
+      const byId = new Map(current.map((reading) => [reading.id, reading]));
+      sessionReadings.forEach((reading) => byId.set(reading.id, reading));
+      return [...byId.values()].sort((a, b) => a.capturedAt - b.capturedAt).slice(-2_000);
+    });
 
     setDashboardInsights((current) => [provisionalInsight, ...current].slice(0, 24));
     toast.success("Session saved to your dashboard", {
@@ -1868,6 +1932,11 @@ export default function SentinelApp() {
 
     try {
       const firebase = await import("@/lib/firebase");
+      if (user) {
+        void firebase.saveRealtimeTelemetrySamples(sessionReadings).catch(() => {
+          setStorageStatus("Realtime Database sync unavailable");
+        });
+      }
       const trend = provisionalInsight.pattern.includes("eased") ? "decreased" : provisionalInsight.pattern.includes("rose") ? "increased" : "steady";
       const geminiInsight = await firebase.generateDashboardSessionInsight({
         sampleCount: provisionalInsight.sampleCount,
@@ -1928,6 +1997,7 @@ export default function SentinelApp() {
       setReadings([]);
       monitoringRef.current = true;
       monitoringStartedAt.current = Date.now();
+      setActiveSessionStartedAt(monitoringStartedAt.current);
       setMonitoring(true); // Auto-start monitoring on successful connect
       toast.success(`${next.name} Connected`, {
         description: "Receiving live physiological data via wireless connection.",
@@ -1958,6 +2028,7 @@ export default function SentinelApp() {
     latestRef.current = null;
     setReadings([]);
     monitoringStartedAt.current = Date.now();
+    setActiveSessionStartedAt(monitoringStartedAt.current);
     setMonitoring(true);
     toast.info("Monitoring resumed.");
   }, [connection, finishMonitoringSession]);
@@ -2016,6 +2087,7 @@ export default function SentinelApp() {
     setConnection(null);
     monitoringRef.current = false;
     monitoringStartedAt.current = null;
+    setActiveSessionStartedAt(null);
     setMonitoring(false);
     setReadings([]);
     toast.success("Signed out. Returned to welcome page.");
@@ -2043,6 +2115,8 @@ export default function SentinelApp() {
           readings={readings}
           events={events}
           dashboardInsights={dashboardInsights}
+          historicalReadings={historicalReadings}
+          activeSessionStartedAt={activeSessionStartedAt}
           connected={Boolean(connection)}
           monitoring={monitoring}
           storageStatus={storageStatus}

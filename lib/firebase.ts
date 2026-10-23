@@ -25,6 +25,16 @@ import {
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
+import {
+  getDatabase,
+  limitToLast,
+  onValue,
+  orderByChild,
+  query as realtimeQuery,
+  ref as realtimeRef,
+  set as setRealtime,
+  update as updateRealtime,
+} from "firebase/database";
 import { getAI, getGenerativeModel, GoogleAIBackend } from "firebase/ai";
 import type { Baseline, SensorReading } from "@/lib/arousal";
 
@@ -36,11 +46,13 @@ export const firebaseConfig = {
   messagingSenderId: "924270629003",
   appId: "1:924270629003:web:e366a4a21c9dc74f97448e",
   measurementId: "G-Q2BT4KZKN8",
+  databaseURL: "https://congressional-cbb4d-default-rtdb.firebaseio.com",
 };
 
 export const firebaseApp = getApps()[0] ?? initializeApp(firebaseConfig);
 export const auth = getAuth(firebaseApp);
 export const db = getFirestore(firebaseApp);
+export const realtimeDb = getDatabase(firebaseApp);
 
 // Initialize Firebase App Check if site key is available
 const appCheckSiteKey = process.env.NEXT_PUBLIC_FIREBASE_APPCHECK_SITE_KEY;
@@ -141,6 +153,17 @@ export type DashboardInsight = {
   pattern: string;
   recommendation: string;
   source: "Google Gemini" | "Session summary";
+};
+
+export type RealtimeEvent = {
+  id: string;
+  date: string;
+  time: string;
+  severity: "Crisis" | "Elevated" | "Resolved" | "System";
+  peak: number;
+  duration: string;
+  trigger: string;
+  recovery: string;
 };
 
 // ── Authentication Functions ──────────────────────────────────────────────────
@@ -353,6 +376,95 @@ export async function saveTelemetrySample(reading: SensorReading, patientId?: st
     deviceCapturedAt: new Date(reading.capturedAt),
     storedAt: serverTimestamp(),
     storedBy: auth.currentUser.uid,
+  });
+}
+
+// ── Realtime Database history ────────────────────────────────────────────────
+// Data is stored beneath the signed-in user's account, never in a shared path.
+function realtimeAccountId() {
+  if (!auth.currentUser) throw new Error("Sign in to save wellness history.");
+  return auth.currentUser.uid;
+}
+
+function serializeRealtimeReading(reading: SensorReading) {
+  return {
+    heartRate: reading.heartRate,
+    gsr: reading.gsr,
+    score: reading.score,
+    stressScore: reading.stressScore,
+    state: reading.state,
+    stressLevel: reading.stressLevel || "RELAXED",
+    source: reading.source,
+    capturedAt: reading.capturedAt,
+  };
+}
+
+export async function saveRealtimeTelemetrySample(reading: SensorReading) {
+  const accountId = realtimeAccountId();
+  return setRealtime(
+    realtimeRef(realtimeDb, `accounts/${accountId}/telemetry/${reading.id}`),
+    serializeRealtimeReading(reading),
+  );
+}
+
+export async function saveRealtimeTelemetrySamples(readings: SensorReading[]) {
+  if (!readings.length) return;
+  const accountId = realtimeAccountId();
+  const updates = Object.fromEntries(
+    readings.map((reading) => [reading.id, serializeRealtimeReading(reading)]),
+  );
+  return updateRealtime(realtimeRef(realtimeDb, `accounts/${accountId}/telemetry`), updates);
+}
+
+export async function saveRealtimeEvent(event: RealtimeEvent) {
+  const accountId = realtimeAccountId();
+  return setRealtime(realtimeRef(realtimeDb, `accounts/${accountId}/events/${event.id}`), event);
+}
+
+export function subscribeToRealtimeTelemetry(callback: (readings: SensorReading[]) => void) {
+  const accountId = realtimeAccountId();
+  const telemetryQuery = realtimeQuery(
+    realtimeRef(realtimeDb, `accounts/${accountId}/telemetry`),
+    orderByChild("capturedAt"),
+    limitToLast(2_000),
+  );
+  return onValue(telemetryQuery, (snapshot) => {
+    const data = (snapshot.val() || {}) as Record<string, Record<string, unknown>>;
+    const readings = Object.entries(data)
+      .map(([id, value]) => ({
+        id,
+        capturedAt: Number(value.capturedAt) || 0,
+        heartRate: Number(value.heartRate) || 0,
+        gsr: Number(value.gsr) || 0,
+        score: Number(value.score ?? value.stressScore) || 0,
+        stressScore: Number(value.stressScore ?? value.score) || 0,
+        state: value.state === "crisis" || value.state === "elevated" ? value.state : "calm",
+        stressLevel: typeof value.stressLevel === "string" ? value.stressLevel : "RELAXED",
+        source: value.source === "demo" ? "demo" : "bluetooth",
+      } satisfies SensorReading))
+      .filter((reading) => reading.capturedAt > 0)
+      .sort((a, b) => a.capturedAt - b.capturedAt);
+    callback(readings);
+  });
+}
+
+export function subscribeToRealtimeEvents(callback: (events: RealtimeEvent[]) => void) {
+  const accountId = realtimeAccountId();
+  return onValue(realtimeRef(realtimeDb, `accounts/${accountId}/events`), (snapshot) => {
+    const data = (snapshot.val() || {}) as Record<string, Partial<RealtimeEvent>>;
+    const events = Object.entries(data)
+      .map(([id, value]) => ({
+        id,
+        date: String(value.date || ""),
+        time: String(value.time || ""),
+        severity: value.severity === "Crisis" || value.severity === "Elevated" || value.severity === "Resolved" ? value.severity : "System",
+        peak: Number(value.peak) || 0,
+        duration: String(value.duration || "—"),
+        trigger: String(value.trigger || "Recorded event"),
+        recovery: String(value.recovery || "—"),
+      } satisfies RealtimeEvent))
+      .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
+    callback(events);
   });
 }
 

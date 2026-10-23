@@ -1,0 +1,21 @@
+{
+  "rules": {
+    "accounts": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid",
+        "telemetry": {
+          ".indexOn": ["capturedAt"],
+          "$readingId": {
+            ".validate": "newData.hasChildren(['heartRate', 'stressScore', 'capturedAt'])"
+          }
+        },
+        "events": {
+          "$eventId": {
+            ".validate": "newData.hasChildren(['id', 'severity'])"
+          }
+        }
+      }
+    }
+  }
+}
