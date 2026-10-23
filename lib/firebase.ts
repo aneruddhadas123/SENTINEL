@@ -17,7 +17,11 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   getFirestore,
+  limit,
+  orderBy,
+  query,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
@@ -54,15 +58,20 @@ if (typeof window !== "undefined" && appCheckSiteKey) {
 // ── Firebase AI Logic Initializations ─────────────────────────────────────────
 const ai = getAI(firebaseApp, { backend: new GoogleAIBackend() });
 
-// 1. Caregiver Support Assistant Model
+// Firebase AI Logic uses the Gemini Developer API configured for this Firebase project.
+// Keep every SENTINEL AI experience on the same supported Gemini model.
+const GEMINI_MODEL = "gemini-2.5-flash";
+
+// 1. SENTINEL Assistant Model
 const careModel = getGenerativeModel(ai, {
-  model: "gemini-3.7-flash",
-  systemInstruction: `You are the SENTINEL caregiver support assistant. Answer the caregiver's actual question directly in clear, natural language. Do not merely repeat heart-rate, GSR, or stress-score values. Explain what the available evidence can and cannot suggest, identify whether there is enough history to discuss a trend, and offer one or two low-risk, general support ideas when relevant. Never diagnose, claim to predict a behavioral crisis, or replace clinical judgment. For urgent danger, advise the caregiver to follow the person's safety plan and contact local emergency services. If there is no live telemetry, say so plainly and answer with general guidance instead of inventing data. Keep answers concise and distinguish observed data from interpretation.`,
+  model: GEMINI_MODEL,
+  systemInstruction: `You are the SENTINEL wellness assistant. Answer the person's actual question directly in clear, natural language. Do not merely repeat heart-rate or stress-score values. Explain what the available evidence can and cannot suggest, identify whether there is enough history to discuss a trend, and offer one or two low-risk, general support ideas when relevant. Never diagnose, claim to predict a behavioral crisis, or replace clinical judgment. For urgent danger, advise the person to follow their safety plan and contact local emergency services. If there is no live telemetry, say so plainly and answer with general guidance instead of inventing data. Keep answers concise and distinguish observed data from interpretation.`,
 });
 
-// 2. Patient Well-Being Companion Model (Dedicated 30-Second Patient AI)
+// 2. Wellness Assessment Model
 const patientModel = getGenerativeModel(ai, {
-  model: "gemini-3.7-flash",
+  model: GEMINI_MODEL,
+  generationConfig: { responseMimeType: "application/json" },
   systemInstruction: `You are SENTINEL's personal wellness companion for the patient. Your tone is warm, encouraging, gentle, and empowering. 
 You are evaluating the patient's real-time physiological signals (Heart Rate and hardware Stress Score) recorded over the last 30 seconds.
 Provide:
@@ -76,6 +85,13 @@ Format your response as a valid JSON object matching this schema:
   "statusSummary": "Your description of how they are doing right now",
   "comfortTip": "One actionable, soothing tip"
 }`,
+});
+
+// 3. Completed-session Dashboard Insights Model
+const dashboardModel = getGenerativeModel(ai, {
+  model: GEMINI_MODEL,
+  generationConfig: { responseMimeType: "application/json" },
+  systemInstruction: `You are the SENTINEL completed-session wellness analyst. Analyze only aggregate information from a completed monitoring session, never present it as current or live data. Give a concise, non-diagnostic retrospective insight. Clearly distinguish observed patterns from interpretation. Do not predict a crisis or replace clinical judgment. Include one low-risk wellness suggestion. Return only valid JSON matching the requested schema.`,
 });
 
 if (typeof window !== "undefined") {
@@ -110,6 +126,21 @@ export type PatientAIAssessment = {
   gsr: number;
   score: number;
   stressLevel?: string;
+};
+
+export type DashboardInsight = {
+  id: string;
+  startedAt: number;
+  endedAt: number;
+  sampleCount: number;
+  averageHeartRate: number;
+  averageStressScore: number;
+  peakStressScore: number;
+  calmPercentage: number;
+  summary: string;
+  pattern: string;
+  recommendation: string;
+  source: "Google Gemini" | "Session summary";
 };
 
 // ── Authentication Functions ──────────────────────────────────────────────────
@@ -425,6 +456,94 @@ export async function savePatientAIAssessment(
     });
   } catch (e) {
     console.warn("Could not save AI assessment to Firestore:", e);
+  }
+}
+
+export async function generateDashboardSessionInsight(context: {
+  sampleCount: number;
+  durationMinutes: number;
+  averageHeartRate: number;
+  averageStressScore: number;
+  peakStressScore: number;
+  calmPercentage: number;
+  trend: "increased" | "decreased" | "steady";
+}) {
+  const prompt = `Completed monitoring session summary (not live telemetry):
+- Samples recorded: ${context.sampleCount}
+- Session duration: ${context.durationMinutes} minutes
+- Average heart rate: ${context.averageHeartRate} BPM
+- Average stress score: ${context.averageStressScore}/100
+- Peak stress score: ${context.peakStressScore}/100
+- Time in calm range: ${context.calmPercentage}%
+- Session trend: stress ${context.trend}
+
+Return this exact JSON shape:
+{
+  "summary": "One or two concise sentences describing the completed session, without claiming these readings are current.",
+  "pattern": "A short retrospective pattern label.",
+  "recommendation": "One gentle, low-risk wellness suggestion."
+}`;
+
+  const result = await dashboardModel.generateContent(prompt);
+  const text = result.response.text().trim();
+  const parsed = JSON.parse(text) as Partial<Pick<DashboardInsight, "summary" | "pattern" | "recommendation">>;
+  if (!parsed.summary || !parsed.pattern || !parsed.recommendation) {
+    throw new Error("Gemini returned an incomplete session insight.");
+  }
+  return {
+    summary: parsed.summary,
+    pattern: parsed.pattern,
+    recommendation: parsed.recommendation,
+  };
+}
+
+export async function saveDashboardInsight(insight: DashboardInsight, patientId?: string) {
+  if (!auth.currentUser) return;
+  const pid = patientId || auth.currentUser.uid;
+  try {
+    await addDoc(collection(db, "patients", pid, "sessionInsights"), {
+      ...insight,
+      startedAt: new Date(insight.startedAt),
+      endedAt: new Date(insight.endedAt),
+      createdAt: serverTimestamp(),
+      userId: auth.currentUser.uid,
+    });
+  } catch (error) {
+    console.warn("Could not save dashboard insight to Firestore:", error);
+  }
+}
+
+export async function loadDashboardInsights(patientId?: string): Promise<DashboardInsight[]> {
+  if (!auth.currentUser) return [];
+  const pid = patientId || auth.currentUser.uid;
+  try {
+    const snapshots = await getDocs(query(collection(db, "patients", pid, "sessionInsights"), orderBy("endedAt", "desc"), limit(24)));
+    return snapshots.docs.map((snapshot) => {
+      const data = snapshot.data();
+      const toMillis = (value: unknown) => {
+        if (value && typeof (value as { toMillis?: unknown }).toMillis === "function") {
+          return (value as { toMillis: () => number }).toMillis();
+        }
+        return typeof value === "number" ? value : Date.now();
+      };
+      return {
+        id: String(data.id || snapshot.id),
+        startedAt: toMillis(data.startedAt),
+        endedAt: toMillis(data.endedAt),
+        sampleCount: Number(data.sampleCount) || 0,
+        averageHeartRate: Number(data.averageHeartRate) || 0,
+        averageStressScore: Number(data.averageStressScore) || 0,
+        peakStressScore: Number(data.peakStressScore) || 0,
+        calmPercentage: Number(data.calmPercentage) || 0,
+        summary: String(data.summary || "Completed monitoring session."),
+        pattern: String(data.pattern || "Session recorded"),
+        recommendation: String(data.recommendation || "Review this session alongside your usual wellness routine."),
+        source: data.source === "Google Gemini" ? "Google Gemini" : "Session summary",
+      };
+    });
+  } catch (error) {
+    console.warn("Could not load dashboard insights from Firestore:", error);
+    return [];
   }
 }
 

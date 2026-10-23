@@ -35,11 +35,12 @@ service cloud.firestore {
         allow create: if isMember(patientId) &&
           request.resource.data.keys().hasOnly([
             'heartRate', 'gsr', 'arousalScore', 'state', 'source',
-            'deviceCapturedAt', 'storedAt', 'storedBy'
+            'stressLevel', 'deviceCapturedAt', 'storedAt', 'storedBy'
           ]) &&
           request.resource.data.heartRate is number &&
           request.resource.data.gsr is number &&
           request.resource.data.arousalScore is number &&
+          request.resource.data.stressLevel is string &&
           request.resource.data.storedBy == request.auth.uid;
         allow update, delete: if false;
       }
@@ -54,6 +55,16 @@ service cloud.firestore {
         allow read, create: if isMember(patientId);
         allow update: if isMember(patientId) && memberRole(patientId) in ['owner', 'caregiver', 'clinician'];
         allow delete: if false;
+      }
+
+      match /aiAssessments/{assessmentId} {
+        allow read, create: if isMember(patientId);
+        allow update, delete: if false;
+      }
+
+      match /sessionInsights/{insightId} {
+        allow read, create: if isMember(patientId);
+        allow update, delete: if false;
       }
     }
   }

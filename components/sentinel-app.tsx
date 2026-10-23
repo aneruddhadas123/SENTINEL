@@ -41,7 +41,6 @@ import {
   Sparkles,
   Square,
   UserCheck,
-  UserRound,
   Waves,
   X,
   Zap,
@@ -81,7 +80,7 @@ import {
   type PulseGuardConnection,
   type PulseGuardSnapshot,
 } from "@/lib/bluetooth";
-import type { PatientAIAssessment, UserProfile, UserRole } from "@/lib/firebase";
+import type { DashboardInsight, PatientAIAssessment, UserProfile, UserRole } from "@/lib/firebase";
 
 // ── Navigation types ──────────────────────────────────────────────────────────
 type PortalView = "overview" | "live" | "insights" | "events" | "settings";
@@ -131,10 +130,43 @@ function formatTime(timestamp: number) {
   return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", second: "2-digit" }).format(timestamp);
 }
 
-function statusStyles(state: ArousalState) {
-  if (state === "crisis") return "bg-rose-50 text-rose-700 border-rose-200";
-  if (state === "elevated") return "bg-amber-50 text-amber-700 border-amber-200";
-  return "bg-[#e7f8f5] text-[#087067] border-[#c9eee8]";
+function formatSessionDate(timestamp: number) {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(timestamp);
+}
+
+function formatSessionDuration(durationMs: number) {
+  const totalMinutes = Math.max(1, Math.round(durationMs / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  return `${hours}h ${totalMinutes % 60}m`;
+}
+
+function createSessionSummary(readings: SensorReading[], startedAt: number, endedAt = Date.now()): DashboardInsight | null {
+  if (!readings.length) return null;
+  const average = (values: number[]) => Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
+  const averageHeartRate = average(readings.map((reading) => reading.heartRate));
+  const averageStressScore = average(readings.map((reading) => reading.stressScore));
+  const peakStressScore = Math.max(...readings.map((reading) => reading.stressScore));
+  const calmPercentage = Math.round((readings.filter((reading) => reading.state === "calm").length / readings.length) * 100);
+  const windowSize = Math.max(1, Math.ceil(readings.length / 3));
+  const openingAverage = average(readings.slice(0, windowSize).map((reading) => reading.stressScore));
+  const closingAverage = average(readings.slice(-windowSize).map((reading) => reading.stressScore));
+  const trend = closingAverage - openingAverage;
+  const pattern = trend <= -8 ? "Stress eased across the session" : trend >= 8 ? "Stress rose across the session" : "Stress remained fairly steady";
+  return {
+    id: `session-${endedAt}`,
+    startedAt,
+    endedAt,
+    sampleCount: readings.length,
+    averageHeartRate,
+    averageStressScore,
+    peakStressScore,
+    calmPercentage,
+    summary: `This completed session averaged ${averageStressScore}/100 for stress, with ${calmPercentage}% of readings in the calm range.`,
+    pattern,
+    recommendation: "Use this completed session as a gentle reference point alongside your usual wellness routine.",
+    source: "Session summary",
+  };
 }
 
 function eventStyles(severity: EventRecord["severity"]) {
@@ -321,25 +353,25 @@ function DeviceBar({
 
 // ── Overview View ─────────────────────────────────────────────────────────────
 function OverviewView({
-  latest,
-  readings,
   events,
-  connected,
+  insights,
   onNavigate,
 }: {
-  latest: SensorReading;
-  readings: SensorReading[];
   events: EventRecord[];
-  connected: boolean;
+  insights: DashboardInsight[];
   onNavigate: (view: PortalView) => void;
 }) {
-  const averageHr = Math.round(readings.slice(-12).reduce((sum, item) => sum + item.heartRate, 0) / Math.max(1, readings.slice(-12).length));
+  const sessionCount = insights.length;
+  const averageStress = sessionCount ? Math.round(insights.reduce((sum, insight) => sum + insight.averageStressScore, 0) / sessionCount) : 0;
+  const peakStress = sessionCount ? Math.max(...insights.map((insight) => insight.peakStressScore)) : 0;
+  const monitoredMs = insights.reduce((sum, insight) => sum + Math.max(0, insight.endedAt - insight.startedAt), 0);
+  const latestInsight = insights[0];
   return (
     <>
       <PageHeading
-        eyebrow="Personal Wellness Overview"
+        eyebrow="Completed session history"
         title="Your Wellness Dashboard"
-        description={connected ? "Your monitoring device is active. Physiological readings are streaming in real time." : "Connect your monitoring device to begin live streaming."}
+        description="Review completed monitoring sessions over time. Current physiological metrics are shown only in Live Monitoring."
         action={
           <Button className="rounded-xl bg-sentinel-teal hover:bg-sentinel-teal-dark" onClick={() => onNavigate("live")}>
             <Radio /> Open Live View
@@ -347,41 +379,45 @@ function OverviewView({
         }
       />
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Current stress score" value={connected ? latest.stressScore : "—"} unit={connected ? "/ 100" : undefined} note={connected ? `${stateLabel(latest.state)} · updated now` : "Connect device to view"} icon={Activity} />
-        <Metric label="Heart rate" value={connected ? latest.heartRate : "—"} unit={connected ? "BPM" : undefined} note={connected ? `12-reading avg. ${averageHr} BPM` : "Connect device to view"} icon={HeartPulse} tone="rose" />
-        <Metric label="Stress score" value={connected ? latest.stressScore : "—"} unit={connected ? "/ 100" : undefined} note={connected ? `${latest.stressLevel || "RELAXED"} · updated now` : "Connect device to view"} icon={Activity} />
-        <Metric label="Events this week" value={events.length} note={events.length ? "Recorded in this session" : "No recorded events"} icon={CalendarClock} tone="amber" />
+        <Metric label="Completed sessions" value={sessionCount} note={sessionCount ? "Saved monitoring sessions" : "Stop a session to create history"} icon={CalendarClock} />
+        <Metric label="Average session stress" value={sessionCount ? averageStress : "—"} unit={sessionCount ? "/ 100" : undefined} note="Across completed sessions" icon={Activity} tone="teal" />
+        <Metric label="Highest recorded stress" value={sessionCount ? peakStress : "—"} unit={sessionCount ? "/ 100" : undefined} note="Historical peak, not current" icon={Activity} tone="amber" />
+        <Metric label="Time monitored" value={sessionCount ? formatSessionDuration(monitoredMs) : "—"} note="Across completed sessions" icon={Clock3} tone="blue" />
       </div>
       <div className="mt-5 grid gap-5 xl:grid-cols-[1.45fr_.75fr]">
         <Panel className="p-6 sm:p-7">
           <div className="flex items-start justify-between">
             <div>
-              <p className="text-sm font-semibold text-sentinel-muted">Stress score trend</p>
+              <p className="text-sm font-semibold text-sentinel-muted">Completed-session stress trend</p>
               <h2 className="mt-1 font-display text-xl font-extrabold">
-                {connected ? "A calm, consistent session" : "Connect device to see trend"}
+                {sessionCount ? "Historical session averages" : "No completed sessions yet"}
               </h2>
             </div>
-            <span className="rounded-full bg-sentinel-soft px-3 py-1.5 text-xs font-bold text-sentinel-teal">Last 12 readings</span>
+            <span className="rounded-full bg-sentinel-soft px-3 py-1.5 text-xs font-bold text-sentinel-teal">Over time</span>
           </div>
           <div className="mt-7">
-            {connected && readings.length > 1 ? (
-              <Sparkline id="overview" values={readings.map((r) => r.score)} color="#0c9488" height={150} />
+            {sessionCount > 1 ? (
+              <Sparkline id="overview" values={[...insights].reverse().map((insight) => insight.averageStressScore)} color="#0c9488" height={150} />
             ) : (
               <div className="flex h-[150px] items-center justify-center rounded-2xl bg-slate-50">
-                <p className="text-sm text-sentinel-muted">No data · Connect your device to view trends</p>
+                <p className="text-sm text-sentinel-muted">Stop a monitoring session to add an over-time trend</p>
               </div>
             )}
           </div>
         </Panel>
         <Panel className="overflow-hidden">
           <div className="border-b border-sentinel-line p-6">
-            <p className="text-sm font-semibold text-sentinel-muted">Today&apos;s plan</p>
-            <h2 className="mt-1 font-display text-xl font-extrabold">Care checkpoints</h2>
+            <p className="text-sm font-semibold text-sentinel-muted">Latest completed insight</p>
+            <h2 className="mt-1 font-display text-xl font-extrabold">{latestInsight?.pattern || "Session insights"}</h2>
           </div>
           <div className="space-y-1 p-3">
-            <div className="rounded-xl bg-slate-50 p-4 text-sm text-sentinel-muted">
-              No care checkpoints configured yet.
-            </div>
+            {latestInsight ? (
+              <div className="rounded-xl bg-slate-50 p-4">
+                <p className="text-sm leading-5 text-sentinel-muted">{latestInsight.summary}</p>
+                <p className="mt-3 border-t border-sentinel-line pt-3 text-sm font-medium leading-5 text-sentinel-ink">{latestInsight.recommendation}</p>
+                <p className="mt-3 text-xs font-bold text-sentinel-teal">{formatSessionDate(latestInsight.endedAt)} · {latestInsight.source}</p>
+              </div>
+            ) : <div className="rounded-xl bg-slate-50 p-4 text-sm text-sentinel-muted">Completed-session insights will appear here after monitoring stops.</div>}
           </div>
         </Panel>
       </div>
@@ -603,6 +639,7 @@ function InsightsView({
   aiBusy,
   aiStatus,
   connected,
+  monitoring,
   patientAssessment,
   aiRefreshing,
   onAsk,
@@ -612,6 +649,7 @@ function InsightsView({
   aiBusy: boolean;
   aiStatus: string;
   connected: boolean;
+  monitoring: boolean;
   patientAssessment: PatientAIAssessment | null;
   aiRefreshing: boolean;
   onAsk: (question: string) => void;
@@ -633,8 +671,8 @@ function InsightsView({
         description="Connect your device and ask for an AI-powered analysis of your physiological patterns. All insights are informational and should not replace clinical guidance."
       />
 
-      {/* On-Demand AI Assessment — only when connected */}
-      {connected && (
+      {/* On-demand Gemini wellness assessment is available only for a live stream. */}
+      {connected && monitoring && (
         <Panel className="mb-6 relative overflow-hidden border-2 border-[#b2e8df] bg-gradient-to-r from-[#f0faf8] to-[#ffffff] p-6 sm:p-8 shadow-[0_12px_36px_rgba(12,148,136,.08)]">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between border-b border-[#e1f3ef] pb-5">
             <div className="flex items-center gap-3.5">
@@ -646,7 +684,7 @@ function InsightsView({
                   Wellness Assessment
                 </h2>
                 <p className="text-xs text-sentinel-muted mt-0.5">
-                  Powered by AI · Personalized wellness evaluation based on live signals
+                  Powered by Google Gemini AI · Personalized wellness evaluation based on live signals
                 </p>
               </div>
             </div>
@@ -663,7 +701,7 @@ function InsightsView({
           </div>
 
           {patientAssessment ? (
-            <div className="mt-6 grid gap-6 lg:grid-cols-[1.4fr_.9fr]">
+            <div className="mt-6">
               <div className="space-y-4">
                 <div className="flex items-center gap-3">
                   <span className="text-xs font-bold uppercase tracking-wider text-sentinel-muted">Current State:</span>
@@ -690,23 +728,6 @@ function InsightsView({
                   </div>
                 </div>
               </div>
-              <div className="rounded-2xl bg-white p-5 border border-sentinel-line shadow-xs space-y-3.5">
-                <p className="text-xs font-bold uppercase tracking-wider text-sentinel-muted">Sensor Snapshot</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-xl bg-rose-50/60 p-3">
-                    <p className="text-[11px] font-semibold text-rose-600">Heart Rate</p>
-                    <p className="mt-1 font-display text-2xl font-extrabold text-slate-900">{patientAssessment.heartRate} <span className="text-xs font-semibold text-slate-500">BPM</span></p>
-                  </div>
-                  <div className="rounded-xl bg-teal-50/60 p-3">
-                    <p className="text-[11px] font-semibold text-sentinel-teal">Stress Score</p>
-                    <p className="mt-1 font-display text-2xl font-extrabold text-slate-900">{patientAssessment.score}<span className="text-xs font-semibold text-slate-500">/100</span></p>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between rounded-xl bg-slate-50 px-3.5 py-2.5 text-xs font-medium">
-                  <span className="text-slate-600">Arousal Score:</span>
-                  <span className="font-extrabold text-slate-900">{patientAssessment.score}/100</span>
-                </div>
-              </div>
             </div>
           ) : (
             <div className="mt-6 flex flex-col items-center justify-center py-8 text-center gap-3">
@@ -717,12 +738,12 @@ function InsightsView({
         </Panel>
       )}
 
-      {!connected && (
+      {(!connected || !monitoring) && (
         <Panel className="mb-6 p-8 text-center">
           <BluetoothOff className="mx-auto size-10 text-slate-300 mb-3" />
-          <h3 className="font-display text-lg font-extrabold">Connect Device for AI Insights</h3>
+          <h3 className="font-display text-lg font-extrabold">{connected ? "Start Monitoring for a Wellness Assessment" : "Connect Device for AI Insights"}</h3>
           <p className="mt-1 text-sm text-sentinel-muted max-w-sm mx-auto">
-            AI wellness assessments are only available when your monitoring device is connected and streaming live data.
+            AI wellness assessments are available only while your monitoring device is connected and streaming live data.
           </p>
         </Panel>
       )}
@@ -738,7 +759,7 @@ function InsightsView({
               <div>
                 <p className="font-display font-extrabold">SENTINEL Assistant</p>
                 <p className="flex items-center gap-1.5 text-xs text-sentinel-muted">
-                  <span className="size-1.5 rounded-full bg-sentinel-teal" /> {aiStatus}
+                  <span className="size-1.5 rounded-full bg-sentinel-teal" /> Google Gemini AI · {aiStatus}
                 </p>
               </div>
             </div>
@@ -815,12 +836,12 @@ function InsightsView({
               </div>
             </div>
             <div className="space-y-3 p-4">
-              <div className={cn("rounded-xl border-l-4 p-4", connected ? "border-sentinel-teal bg-sentinel-soft" : "border-slate-300 bg-slate-50")}>
+              <div className={cn("rounded-xl border-l-4 p-4", connected && monitoring ? "border-sentinel-teal bg-sentinel-soft" : "border-slate-300 bg-slate-50")}>
                 <div className="flex justify-between text-[11px] font-bold uppercase tracking-[.06em] text-sentinel-teal">
                   <span>Device Status</span>
-                  <span>{connected ? "Live" : "Offline"}</span>
+                  <span>{connected && monitoring ? "Live" : connected ? "Paused" : "Offline"}</span>
                 </div>
-                <p className="mt-2 text-sm leading-5">{connected ? "Monitoring device is actively recording physiological signals." : "Connect your device to start recording."}</p>
+                <p className="mt-2 text-sm leading-5">{connected && monitoring ? "Monitoring device is actively recording physiological signals." : connected ? "Monitoring is paused. Start a live session to create a new assessment." : "Connect your device to start recording."}</p>
               </div>
             </div>
           </Panel>
@@ -938,13 +959,11 @@ function EventsView({ events, onExport }: { events: EventRecord[]; onExport: () 
 // ── Settings View ─────────────────────────────────────────────────────────────
 function SettingsView({
   user,
-  profile,
   storageStatus,
   onAuth,
   onSignOut,
 }: {
   user: FirebaseAuthState;
-  profile: UserProfile | null;
   storageStatus: string;
   onAuth: () => void;
   onSignOut: () => void;
@@ -1157,6 +1176,7 @@ function PatientPortal({
   latest,
   readings,
   events,
+  dashboardInsights,
   connected,
   monitoring,
   storageStatus,
@@ -1181,6 +1201,7 @@ function PatientPortal({
   latest: SensorReading;
   readings: SensorReading[];
   events: EventRecord[];
+  dashboardInsights: DashboardInsight[];
   connected: boolean;
   monitoring: boolean;
   storageStatus: string;
@@ -1347,10 +1368,8 @@ function PatientPortal({
         <div className="mx-auto max-w-[1420px] px-5 py-7 sm:px-8 lg:px-10 lg:py-9">
           {view === "overview" && (
             <OverviewView
-              latest={latest}
-              readings={readings}
               events={events}
-              connected={connected && monitoring}
+              insights={dashboardInsights}
               onNavigate={setView}
             />
           )}
@@ -1372,6 +1391,7 @@ function PatientPortal({
               aiBusy={aiBusy}
               aiStatus={aiStatus}
               connected={connected}
+              monitoring={monitoring}
               patientAssessment={patientAssessment}
               aiRefreshing={aiRefreshing}
               onAsk={onAsk}
@@ -1382,7 +1402,6 @@ function PatientPortal({
           {view === "settings" && (
             <SettingsView
               user={user}
-              profile={profile}
               storageStatus={storageStatus}
               onAuth={onAuth}
               onSignOut={onSignOut}
@@ -1629,6 +1648,15 @@ export default function SentinelApp() {
   const [monitoring, setMonitoring] = useState(false);
   const [storageStatus, setStorageStatus] = useState("Local buffer");
   const [events, setEvents] = useState<EventRecord[]>([]);
+  const [dashboardInsights, setDashboardInsights] = useState<DashboardInsight[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const saved = JSON.parse(localStorage.getItem("sentinel-dashboard-insights") ?? "[]") as DashboardInsight[];
+      return Array.isArray(saved) ? saved.slice(0, 24) : [];
+    } catch {
+      return [];
+    }
+  });
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiStatus, setAiStatus] = useState("AI Wellness Assistant ready");
@@ -1646,6 +1674,10 @@ export default function SentinelApp() {
   const sensorSnapshot = useRef<PulseGuardSnapshot>({});
   const lastSensorPublish = useRef(0);
   const latestRef = useRef<SensorReading | null>(null);
+  const readingsRef = useRef<SensorReading[]>([]);
+  const sessionReadingsRef = useRef<SensorReading[]>([]);
+  const monitoringRef = useRef(false);
+  const monitoringStartedAt = useRef<number | null>(null);
   const previousState = useRef<ArousalState>("calm");
 
   // Always keep latest reading in a ref
@@ -1653,6 +1685,18 @@ export default function SentinelApp() {
   useEffect(() => {
     if (latest) latestRef.current = latest;
   }, [latest]);
+
+  useEffect(() => {
+    monitoringRef.current = monitoring;
+  }, [monitoring]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("sentinel-dashboard-insights", JSON.stringify(dashboardInsights.slice(0, 24)));
+    } catch {
+      // The on-screen session history remains useful if local storage is unavailable.
+    }
+  }, [dashboardInsights]);
 
   // Firebase Auth Observer — on auth change, go to portal
   useEffect(() => {
@@ -1665,6 +1709,15 @@ export default function SentinelApp() {
           setStorageStatus(nextUser ? "Firestore sync enabled" : "Local buffer");
           if (nextUser) {
             setMode("portal");
+            void import("@/lib/firebase")
+              .then((firebase) => firebase.loadDashboardInsights(nextProfile?.patientId || nextUser.uid))
+              .then((cloudInsights) => {
+                if (!cloudInsights.length) return;
+                setDashboardInsights((current) => {
+                  const merged = [...cloudInsights, ...current.filter((insight) => !cloudInsights.some((cloud) => cloud.id === insight.id))];
+                  return merged.sort((a, b) => b.endedAt - a.endedAt).slice(0, 24);
+                });
+              });
           }
         });
       })
@@ -1692,7 +1745,13 @@ export default function SentinelApp() {
 
   // Add a new reading — only when device is connected AND monitoring is active
   const addReading = useCallback((reading: SensorReading) => {
-    setReadings((current) => [...current.slice(-35), reading]);
+    if (!monitoringStartedAt.current) monitoringStartedAt.current = reading.capturedAt;
+    sessionReadingsRef.current = [...sessionReadingsRef.current.slice(-3_599), reading];
+    setReadings((current) => {
+      const next = [...current.slice(-35), reading];
+      readingsRef.current = next;
+      return next;
+    });
     if (reading.state !== "calm" && previousState.current === "calm") {
       const severity = reading.state === "crisis" ? "Crisis" : "Elevated";
       setEvents((current) => [
@@ -1717,7 +1776,7 @@ export default function SentinelApp() {
 
   // Firestore Sync every 30s — only when in portal and user is logged in
   useEffect(() => {
-    if (mode !== "portal") return;
+    if (mode !== "portal" || !monitoring) return;
     const interval = window.setInterval(() => {
       const reading = latestRef.current;
       if (!reading) return;
@@ -1735,7 +1794,7 @@ export default function SentinelApp() {
       }
     }, 30_000);
     return () => window.clearInterval(interval);
-  }, [mode, profile, user]);
+  }, [mode, monitoring, profile, user]);
 
   // Manual save sample
   const handleSaveSample = useCallback(async () => {
@@ -1791,6 +1850,46 @@ export default function SentinelApp() {
     }
   }, [profile, user]);
 
+  const finishMonitoringSession = useCallback(async () => {
+    const startedAt = monitoringStartedAt.current;
+    const endedAt = Date.now();
+    monitoringStartedAt.current = null;
+    if (!startedAt) return;
+
+    const sessionReadings = sessionReadingsRef.current.filter((reading) => reading.capturedAt >= startedAt && reading.capturedAt <= endedAt);
+    const provisionalInsight = createSessionSummary(sessionReadings, startedAt, endedAt);
+    if (!provisionalInsight) return;
+    sessionReadingsRef.current = [];
+
+    setDashboardInsights((current) => [provisionalInsight, ...current].slice(0, 24));
+    toast.success("Session saved to your dashboard", {
+      description: "A completed-session insight is ready; Gemini is refining the summary.",
+    });
+
+    try {
+      const firebase = await import("@/lib/firebase");
+      const trend = provisionalInsight.pattern.includes("eased") ? "decreased" : provisionalInsight.pattern.includes("rose") ? "increased" : "steady";
+      const geminiInsight = await firebase.generateDashboardSessionInsight({
+        sampleCount: provisionalInsight.sampleCount,
+        durationMinutes: Math.max(1, Math.round((endedAt - startedAt) / 60_000)),
+        averageHeartRate: provisionalInsight.averageHeartRate,
+        averageStressScore: provisionalInsight.averageStressScore,
+        peakStressScore: provisionalInsight.peakStressScore,
+        calmPercentage: provisionalInsight.calmPercentage,
+        trend,
+      });
+      const completedInsight: DashboardInsight = {
+        ...provisionalInsight,
+        ...geminiInsight,
+        source: "Google Gemini",
+      };
+      setDashboardInsights((current) => current.map((insight) => insight.id === completedInsight.id ? completedInsight : insight));
+      if (user) await firebase.saveDashboardInsight(completedInsight, profile?.patientId || user.uid);
+    } catch (error) {
+      console.info("Gemini session insight unavailable; retaining local session summary.", error);
+    }
+  }, [profile, user]);
+
   // Web Bluetooth Connect
   const connect = useCallback(async () => {
     if (!supportsWebBluetooth()) {
@@ -1807,19 +1906,28 @@ export default function SentinelApp() {
           const now = Date.now();
           const hr = sensorSnapshot.current.heartRate;
           const stress = sensorSnapshot.current.stress;
-          // Only add reading if monitoring is active (check via ref to avoid stale closure)
-          if (hr !== undefined && stress !== undefined && now - lastSensorPublish.current > 700) {
+          // Live metrics and readings are collected only while monitoring is active.
+          if (monitoringRef.current && hr !== undefined && stress !== undefined && now - lastSensorPublish.current > 700) {
             lastSensorPublish.current = now;
             addReading(createHardwareReading(hr, stress, "bluetooth"));
           }
         },
         () => {
+          monitoringRef.current = false;
           setConnection(null);
           setMonitoring(false);
+          void finishMonitoringSession();
+          setView("overview");
           toast.info("Device disconnected.");
         },
       );
       setConnection(next);
+      sessionReadingsRef.current = [];
+      readingsRef.current = [];
+      latestRef.current = null;
+      setReadings([]);
+      monitoringRef.current = true;
+      monitoringStartedAt.current = Date.now();
       setMonitoring(true); // Auto-start monitoring on successful connect
       toast.success(`${next.name} Connected`, {
         description: "Receiving live physiological data via wireless connection.",
@@ -1829,19 +1937,30 @@ export default function SentinelApp() {
         toast.error(error instanceof Error ? error.message : "Could not connect to the device.");
       }
     }
-  }, [addReading, connection]);
+  }, [addReading, connection, finishMonitoringSession]);
 
   const toggleMonitoring = useCallback(() => {
     if (!connection) {
       toast.info("Connect a device first.");
       return;
     }
-    setMonitoring((prev) => {
-      const next = !prev;
-      toast.info(next ? "Monitoring resumed." : "Monitoring paused.");
-      return next;
-    });
-  }, [connection]);
+    if (monitoringRef.current) {
+      monitoringRef.current = false;
+      setMonitoring(false);
+      void finishMonitoringSession();
+      setView("overview");
+      toast.info("Monitoring stopped. Completed-session insights are now on your dashboard.");
+      return;
+    }
+    monitoringRef.current = true;
+    sessionReadingsRef.current = [];
+    readingsRef.current = [];
+    latestRef.current = null;
+    setReadings([]);
+    monitoringStartedAt.current = Date.now();
+    setMonitoring(true);
+    toast.info("Monitoring resumed.");
+  }, [connection, finishMonitoringSession]);
 
   const ask = useCallback(
     async (question: string) => {
@@ -1895,6 +2014,8 @@ export default function SentinelApp() {
     setProfile(null);
     setMode("landing");
     setConnection(null);
+    monitoringRef.current = false;
+    monitoringStartedAt.current = null;
     setMonitoring(false);
     setReadings([]);
     toast.success("Signed out. Returned to welcome page.");
@@ -1921,6 +2042,7 @@ export default function SentinelApp() {
           latest={safeLatest}
           readings={readings}
           events={events}
+          dashboardInsights={dashboardInsights}
           connected={Boolean(connection)}
           monitoring={monitoring}
           storageStatus={storageStatus}
