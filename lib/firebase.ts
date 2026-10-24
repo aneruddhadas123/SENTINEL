@@ -381,91 +381,157 @@ export async function saveTelemetrySample(reading: SensorReading, patientId?: st
 
 // ── Realtime Database history ────────────────────────────────────────────────
 // Data is stored beneath the signed-in user's account, never in a shared path.
-function realtimeAccountId() {
-  if (!auth.currentUser) throw new Error("Sign in to save wellness history.");
-  return auth.currentUser.uid;
+function realtimeAccountId(uid?: string) {
+  const resolved = uid || auth.currentUser?.uid;
+  if (!resolved) throw new Error("Sign in to save wellness history.");
+  return resolved;
 }
 
 function serializeRealtimeReading(reading: SensorReading) {
   return {
-    heartRate: reading.heartRate,
-    gsr: reading.gsr,
-    score: reading.score,
-    stressScore: reading.stressScore,
-    state: reading.state,
+    heartRate: Number(reading.heartRate) || 0,
+    gsr: Number(reading.gsr) || 0,
+    score: Number(reading.score ?? reading.stressScore) || 0,
+    stressScore: Number(reading.stressScore ?? reading.score) || 0,
+    state: reading.state || "calm",
     stressLevel: reading.stressLevel || "RELAXED",
-    source: reading.source,
-    capturedAt: reading.capturedAt,
+    source: reading.source || "bluetooth",
+    capturedAt: Number(reading.capturedAt) || Date.now(),
   };
 }
 
-export async function saveRealtimeTelemetrySample(reading: SensorReading) {
-  const accountId = realtimeAccountId();
+export async function saveRealtimeTelemetrySample(reading: SensorReading, uid?: string) {
+  const accountId = realtimeAccountId(uid);
+  const readingId = reading.id || `read-${reading.capturedAt || Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   return setRealtime(
-    realtimeRef(realtimeDb, `accounts/${accountId}/telemetry/${reading.id}`),
-    serializeRealtimeReading(reading),
+    realtimeRef(realtimeDb, `accounts/${accountId}/telemetry/${readingId}`),
+    serializeRealtimeReading({ ...reading, id: readingId }),
   );
 }
 
-export async function saveRealtimeTelemetrySamples(readings: SensorReading[]) {
+export async function saveRealtimeTelemetrySamples(readings: SensorReading[], uid?: string) {
   if (!readings.length) return;
-  const accountId = realtimeAccountId();
-  const updates = Object.fromEntries(
-    readings.map((reading) => [reading.id, serializeRealtimeReading(reading)]),
-  );
+  const accountId = realtimeAccountId(uid);
+  const updates: Record<string, ReturnType<typeof serializeRealtimeReading>> = {};
+  for (const reading of readings) {
+    const readingId = reading.id || `read-${reading.capturedAt || Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    updates[readingId] = serializeRealtimeReading({ ...reading, id: readingId });
+  }
   return updateRealtime(realtimeRef(realtimeDb, `accounts/${accountId}/telemetry`), updates);
 }
 
-export async function saveRealtimeEvent(event: RealtimeEvent) {
-  const accountId = realtimeAccountId();
-  return setRealtime(realtimeRef(realtimeDb, `accounts/${accountId}/events/${event.id}`), event);
-}
-
-export function subscribeToRealtimeTelemetry(callback: (readings: SensorReading[]) => void) {
-  const accountId = realtimeAccountId();
-  const telemetryQuery = realtimeQuery(
-    realtimeRef(realtimeDb, `accounts/${accountId}/telemetry`),
-    orderByChild("capturedAt"),
-    limitToLast(2_000),
-  );
-  return onValue(telemetryQuery, (snapshot) => {
-    const data = (snapshot.val() || {}) as Record<string, Record<string, unknown>>;
-    const readings = Object.entries(data)
-      .map(([id, value]) => ({
-        id,
-        capturedAt: Number(value.capturedAt) || 0,
-        heartRate: Number(value.heartRate) || 0,
-        gsr: Number(value.gsr) || 0,
-        score: Number(value.score ?? value.stressScore) || 0,
-        stressScore: Number(value.stressScore ?? value.score) || 0,
-        state: value.state === "crisis" || value.state === "elevated" ? value.state : "calm",
-        stressLevel: typeof value.stressLevel === "string" ? value.stressLevel : "RELAXED",
-        source: value.source === "demo" ? "demo" : "bluetooth",
-      } satisfies SensorReading))
-      .filter((reading) => reading.capturedAt > 0)
-      .sort((a, b) => a.capturedAt - b.capturedAt);
-    callback(readings);
+export async function saveRealtimeEvent(event: RealtimeEvent, uid?: string) {
+  const accountId = realtimeAccountId(uid);
+  const eventId = event.id || `EVT-${Date.now()}`;
+  return setRealtime(realtimeRef(realtimeDb, `accounts/${accountId}/events/${eventId}`), {
+    ...event,
+    id: eventId,
+    severity: event.severity || "System",
   });
 }
 
-export function subscribeToRealtimeEvents(callback: (events: RealtimeEvent[]) => void) {
-  const accountId = realtimeAccountId();
-  return onValue(realtimeRef(realtimeDb, `accounts/${accountId}/events`), (snapshot) => {
-    const data = (snapshot.val() || {}) as Record<string, Partial<RealtimeEvent>>;
-    const events = Object.entries(data)
-      .map(([id, value]) => ({
-        id,
-        date: String(value.date || ""),
-        time: String(value.time || ""),
-        severity: value.severity === "Crisis" || value.severity === "Elevated" || value.severity === "Resolved" ? value.severity : "System",
-        peak: Number(value.peak) || 0,
-        duration: String(value.duration || "—"),
-        trigger: String(value.trigger || "Recorded event"),
-        recovery: String(value.recovery || "—"),
-      } satisfies RealtimeEvent))
-      .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
-    callback(events);
-  });
+export function subscribeToRealtimeTelemetry(
+  callback: (readings: SensorReading[]) => void,
+  onError?: (err: Error) => void,
+  uid?: string,
+) {
+  try {
+    const accountId = realtimeAccountId(uid);
+    const telemetryQuery = realtimeQuery(
+      realtimeRef(realtimeDb, `accounts/${accountId}/telemetry`),
+      orderByChild("capturedAt"),
+      limitToLast(2_000),
+    );
+    return onValue(
+      telemetryQuery,
+      (snapshot) => {
+        try {
+          const data = (snapshot.val() || {}) as Record<string, Record<string, unknown>>;
+          const readings = Object.entries(data)
+            .map(([id, value]) => ({
+              id,
+              capturedAt: Number(value.capturedAt) || 0,
+              heartRate: Number(value.heartRate) || 0,
+              gsr: Number(value.gsr) || 0,
+              score: Number(value.score ?? value.stressScore) || 0,
+              stressScore: Number(value.stressScore ?? value.score) || 0,
+              state: value.state === "crisis" || value.state === "elevated" ? value.state : "calm",
+              stressLevel: typeof value.stressLevel === "string" ? value.stressLevel : "RELAXED",
+              source: value.source === "demo" ? "demo" : "bluetooth",
+            } satisfies SensorReading))
+            .filter((reading) => reading.capturedAt > 0)
+            .sort((a, b) => a.capturedAt - b.capturedAt);
+          callback(readings);
+        } catch (e) {
+          onError?.(e instanceof Error ? e : new Error(String(e)));
+        }
+      },
+      (error) => {
+        console.warn("RTDB telemetry listener error:", error);
+        onError?.(error);
+      },
+    );
+  } catch (err) {
+    onError?.(err instanceof Error ? err : new Error(String(err)));
+    return () => {};
+  }
+}
+
+export function subscribeToRealtimeEvents(
+  callback: (events: RealtimeEvent[]) => void,
+  onError?: (err: Error) => void,
+  uid?: string,
+) {
+  try {
+    const accountId = realtimeAccountId(uid);
+    return onValue(
+      realtimeRef(realtimeDb, `accounts/${accountId}/events`),
+      (snapshot) => {
+        try {
+          const data = (snapshot.val() || {}) as Record<string, Partial<RealtimeEvent>>;
+          const events = Object.entries(data)
+            .map(([id, value]) => ({
+              id,
+              date: String(value.date || ""),
+              time: String(value.time || ""),
+              severity: value.severity === "Crisis" || value.severity === "Elevated" || value.severity === "Resolved" ? value.severity : "System",
+              peak: Number(value.peak) || 0,
+              duration: String(value.duration || "—"),
+              trigger: String(value.trigger || "Recorded event"),
+              recovery: String(value.recovery || "—"),
+            } satisfies RealtimeEvent))
+            .sort((a, b) => `${b.date} ${b.time}`.localeCompare(`${a.date} ${a.time}`));
+          callback(events);
+        } catch (e) {
+          onError?.(e instanceof Error ? e : new Error(String(e)));
+        }
+      },
+      (error) => {
+        console.warn("RTDB events listener error:", error);
+        onError?.(error);
+      },
+    );
+  } catch (err) {
+    onError?.(err instanceof Error ? err : new Error(String(err)));
+    return () => {};
+  }
+}
+
+export function subscribeToRealtimeConnection(callback: (connected: boolean) => void) {
+  try {
+    const connectedRef = realtimeRef(realtimeDb, ".info/connected");
+    return onValue(
+      connectedRef,
+      (snap) => {
+        callback(Boolean(snap.val()));
+      },
+      () => {
+        callback(false);
+      },
+    );
+  } catch {
+    return () => {};
+  }
 }
 
 export async function saveCalibration(baseline: Baseline, patientId?: string) {

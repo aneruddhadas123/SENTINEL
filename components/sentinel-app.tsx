@@ -3,8 +3,10 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ComponentType,
   type FormEvent,
   type ReactNode,
@@ -81,6 +83,14 @@ import {
   type PulseGuardSnapshot,
 } from "@/lib/bluetooth";
 import type { DashboardInsight, PatientAIAssessment, RealtimeEvent, UserProfile, UserRole } from "@/lib/firebase";
+import {
+  HeartRateHistoryChart,
+  StressScoreHistoryChart,
+  TimeRangeSelector,
+  ConnectionStatusBanner,
+  filterReadingsByTimeRange,
+  type TimeRange,
+} from "@/components/historical-charts";
 
 // ── Navigation types ──────────────────────────────────────────────────────────
 type PortalView = "overview" | "live" | "insights" | "events" | "settings";
@@ -113,6 +123,22 @@ const quickPrompts = [
 ];
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+function useOnlineStatus() {
+  return useSyncExternalStore(
+    (callback) => {
+      if (typeof window === "undefined") return () => {};
+      window.addEventListener("online", callback);
+      window.addEventListener("offline", callback);
+      return () => {
+        window.removeEventListener("online", callback);
+        window.removeEventListener("offline", callback);
+      };
+    },
+    () => (typeof navigator !== "undefined" ? navigator.onLine : true),
+    () => true,
+  );
+}
+
 function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
@@ -231,6 +257,7 @@ function Metric({
   );
 }
 
+/* eslint-disable-next-line @typescript-eslint/no-unused-vars */
 function Sparkline({ values, color, id, height = 112 }: { values: number[]; color: string; id: string; height?: number }) {
   const width = 420;
   const min = Math.min(...values) - 2;
@@ -347,86 +374,177 @@ function OverviewView({
   events,
   insights,
   historicalReadings,
-  activeSessionStartedAt,
+  isRtdbConnected,
+  isOnline,
+  storageStatus,
   onNavigate,
 }: {
   events: EventRecord[];
   insights: DashboardInsight[];
   historicalReadings: SensorReading[];
-  activeSessionStartedAt: number | null;
+  isRtdbConnected: boolean;
+  isOnline: boolean;
+  storageStatus: string;
   onNavigate: (view: PortalView) => void;
 }) {
-  // Overview deliberately excludes an active session. Current metrics remain
-  // exclusive to Live Monitoring, while these graphs stay historical.
-  const completedReadings = activeSessionStartedAt
-    ? historicalReadings.filter((reading) => reading.capturedAt < activeSessionStartedAt)
-    : historicalReadings;
-  const historyAverage = (values: number[]) => Math.round(values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length));
+  const [timeRange, setTimeRange] = useState<TimeRange>("all");
+
+  const filteredReadings: SensorReading[] = useMemo(() => {
+    return filterReadingsByTimeRange(historicalReadings, timeRange);
+  }, [historicalReadings, timeRange]);
+
+  const historyAverage = (values: number[]) =>
+    Math.round(values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length));
+
   const sessionCount = insights.length;
-  const averageHeartRate = completedReadings.length ? historyAverage(completedReadings.map((reading) => reading.heartRate)) : 0;
-  const averageStress = completedReadings.length ? historyAverage(completedReadings.map((reading) => reading.stressScore)) : 0;
-  const peakStress = completedReadings.length ? Math.max(...completedReadings.map((reading) => reading.stressScore)) : 0;
-  const monitoredMs = insights.reduce((sum, insight) => sum + Math.max(0, insight.endedAt - insight.startedAt), 0);
+  // Metrics reflect the active filtered time range if data exists, otherwise total history
+  const activeReadings: SensorReading[] = filteredReadings.length ? filteredReadings : historicalReadings;
+  const averageHeartRate = activeReadings.length
+    ? historyAverage(activeReadings.map((reading: SensorReading) => reading.heartRate))
+    : 0;
+  const averageStress = activeReadings.length
+    ? historyAverage(activeReadings.map((reading: SensorReading) => reading.stressScore))
+    : 0;
+  const peakStress = activeReadings.length
+    ? Math.max(...activeReadings.map((reading: SensorReading) => reading.stressScore))
+    : 0;
+  const monitoredMs = insights.reduce(
+    (sum, insight) => sum + Math.max(0, insight.endedAt - insight.startedAt),
+    0,
+  );
   const latestInsight = insights[0];
+
   return (
     <>
+      <ConnectionStatusBanner
+        isRtdbConnected={isRtdbConnected}
+        isOnline={isOnline}
+        storageStatus={storageStatus}
+      />
+
       <PageHeading
-        eyebrow="Completed session history"
+        eyebrow="Historical health intelligence"
         title="Your Wellness Dashboard"
-        description="Review completed monitoring sessions over time. Current physiological metrics are shown only in Live Monitoring."
+        description="Review historical physiological trends, stress patterns, and completed sessions over time. Current real-time vitals are streamed exclusively in Live Monitoring."
         action={
-          <Button className="rounded-xl bg-sentinel-teal hover:bg-sentinel-teal-dark" onClick={() => onNavigate("live")}>
+          <Button
+            className="rounded-xl bg-sentinel-teal hover:bg-sentinel-teal-dark"
+            onClick={() => onNavigate("live")}
+          >
             <Radio /> Open Live View
           </Button>
         }
       />
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <Metric label="Completed sessions" value={sessionCount} note={sessionCount ? "Saved monitoring sessions" : "Stop a session to create history"} icon={CalendarClock} />
-        <Metric label="Average heart rate" value={completedReadings.length ? averageHeartRate : "—"} unit={completedReadings.length ? "BPM" : undefined} note="Stored history, not current" icon={HeartPulse} tone="rose" />
-        <Metric label="Average stress score" value={completedReadings.length ? averageStress : "—"} unit={completedReadings.length ? "/ 100" : undefined} note="Stored history, not current" icon={Activity} tone="teal" />
-        <Metric label="Highest recorded stress" value={completedReadings.length ? peakStress : "—"} unit={completedReadings.length ? "/ 100" : undefined} note="Historical peak, not current" icon={Activity} tone="amber" />
-        <Metric label="Time monitored" value={sessionCount ? formatSessionDuration(monitoredMs) : "—"} note="Across completed sessions" icon={Clock3} tone="blue" />
+        <Metric
+          label="Completed sessions"
+          value={sessionCount}
+          note={sessionCount ? "Saved monitoring sessions" : "Stop a session to create history"}
+          icon={CalendarClock}
+        />
+        <Metric
+          label="Average heart rate"
+          value={activeReadings.length ? averageHeartRate : "—"}
+          unit={activeReadings.length ? "BPM" : undefined}
+          note={timeRange === "all" ? "Stored history, not current" : `Filtered: ${timeRange} window`}
+          icon={HeartPulse}
+          tone="rose"
+        />
+        <Metric
+          label="Average stress score"
+          value={activeReadings.length ? averageStress : "—"}
+          unit={activeReadings.length ? "/ 100" : undefined}
+          note={timeRange === "all" ? "Stored history, not current" : `Filtered: ${timeRange} window`}
+          icon={Activity}
+          tone="teal"
+        />
+        <Metric
+          label="Highest recorded stress"
+          value={activeReadings.length ? peakStress : "—"}
+          unit={activeReadings.length ? "/ 100" : undefined}
+          note={timeRange === "all" ? "Historical peak, not current" : `Filtered: ${timeRange} window`}
+          icon={Activity}
+          tone="amber"
+        />
+        <Metric
+          label="Time monitored"
+          value={sessionCount ? formatSessionDuration(monitoredMs) : "—"}
+          note="Across completed sessions"
+          icon={Clock3}
+          tone="blue"
+        />
       </div>
-      <div className="mt-5 grid gap-5 xl:grid-cols-2">
-        <Panel className="p-6 sm:p-7">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-sentinel-muted">Heart-rate history</p>
-              <h2 className="mt-1 font-display text-xl font-extrabold">Changes over completed sessions</h2>
+
+      {/* Historical Telemetry Section with Time Range Selector & Interactive Charts */}
+      <div className="mt-8">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="size-2 rounded-full bg-sentinel-teal animate-pulse" />
+              <p className="text-xs font-bold uppercase tracking-widest text-sentinel-teal">
+                Historical Trends
+              </p>
             </div>
-            <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600">Historical</span>
+            <h2 className="mt-0.5 font-display text-2xl font-extrabold text-slate-900">
+              Physiological Metrics Over Time
+            </h2>
+            <p className="text-xs text-sentinel-muted">
+              Auto-updates in real time as new readings are recorded to Firebase Realtime Database
+            </p>
           </div>
-          <div className="mt-7">
-            {completedReadings.length > 1 ? (
-              <Sparkline id="overview-heart" values={completedReadings.map((reading) => reading.heartRate)} color="#eb5b69" height={150} />
-            ) : (
-              <div className="flex h-[150px] items-center justify-center rounded-2xl bg-slate-50">
-                <p className="text-sm text-sentinel-muted">Complete a session to add heart-rate history</p>
+          <TimeRangeSelector selected={timeRange} onChange={setTimeRange} />
+        </div>
+
+        <div className="grid gap-5 xl:grid-cols-2">
+          <Panel className="p-6 sm:p-7">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm font-semibold text-sentinel-muted">Heart-rate history</p>
+                <h3 className="mt-1 font-display text-xl font-extrabold text-slate-900">
+                  Beats Per Minute Over Time
+                </h3>
               </div>
-            )}
-          </div>
-          <p className="mt-3 text-xs text-sentinel-muted">Earlier readings <span className="float-right">Most recent completed reading</span></p>
-        </Panel>
-        <Panel className="p-6 sm:p-7">
-          <div className="flex items-start justify-between">
-            <div>
-              <p className="text-sm font-semibold text-sentinel-muted">Stress-score history</p>
-              <h2 className="mt-1 font-display text-xl font-extrabold">Changes over completed sessions</h2>
+              <span className="rounded-full bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-600">
+                Historical (BPM)
+              </span>
             </div>
-            <span className="rounded-full bg-sentinel-soft px-3 py-1.5 text-xs font-bold text-sentinel-teal">Historical</span>
-          </div>
-          <div className="mt-7">
-            {completedReadings.length > 1 ? (
-              <Sparkline id="overview-stress" values={completedReadings.map((reading) => reading.stressScore)} color="#0c9488" height={150} />
-            ) : (
-              <div className="flex h-[150px] items-center justify-center rounded-2xl bg-slate-50">
-                <p className="text-sm text-sentinel-muted">Complete a session to add stress-score history</p>
+            <div className="mt-6">
+              <HeartRateHistoryChart
+                readings={filteredReadings}
+                timeRange={timeRange}
+                hasAnyData={historicalReadings.length > 0}
+                onResetRange={() => setTimeRange("all")}
+                onNavigateLive={() => onNavigate("live")}
+              />
+            </div>
+          </Panel>
+
+          <Panel className="p-6 sm:p-7">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-sm font-semibold text-sentinel-muted">Stress-score history</p>
+                <h3 className="mt-1 font-display text-xl font-extrabold text-slate-900">
+                  Hardware Stress Score Over Time
+                </h3>
               </div>
-            )}
-          </div>
-          <p className="mt-3 text-xs text-sentinel-muted">Earlier readings <span className="float-right">Most recent completed reading</span></p>
-        </Panel>
+              <span className="rounded-full bg-sentinel-soft px-3 py-1.5 text-xs font-bold text-sentinel-teal">
+                Historical (0–100)
+              </span>
+            </div>
+            <div className="mt-6">
+              <StressScoreHistoryChart
+                readings={filteredReadings}
+                timeRange={timeRange}
+                hasAnyData={historicalReadings.length > 0}
+                onResetRange={() => setTimeRange("all")}
+                onNavigateLive={() => onNavigate("live")}
+              />
+            </div>
+          </Panel>
+        </div>
       </div>
+
       <div className="mt-5 grid gap-5 xl:grid-cols-[.72fr_1.28fr]">
         <Panel className="p-6 sm:p-7">
           <p className="text-sm font-semibold text-sentinel-muted">Historical monitoring time</p>
@@ -468,22 +586,22 @@ function OverviewView({
 // ── Live View ─────────────────────────────────────────────────────────────────
 function LiveView({
   latest,
-  readings,
   connected,
   monitoring,
   storageStatus,
   stressLevel,
   onConnect,
   onToggleMonitoring,
+  onNavigate,
 }: {
   latest: SensorReading;
-  readings: SensorReading[];
   connected: boolean;
   monitoring: boolean;
   storageStatus: string;
   stressLevel?: string;
   onConnect: () => void;
   onToggleMonitoring: () => void;
+  onNavigate?: (view: PortalView) => void;
 }) {
   return (
     <>
@@ -596,64 +714,179 @@ function LiveView({
                 </div>
                 <div>
                   <p className="text-xs text-sentinel-muted">Sync Rate</p>
-                  <p className="mt-1 text-sm font-bold">1 sec · 30s Cloud</p>
+                  <p className="mt-1 text-sm font-bold">1 sec · Realtime DB</p>
                 </div>
               </div>
             </Panel>
           </div>
+
+          {/* Real-time Health Information Cards (Strictly Current, No Historical Charts) */}
           <div className="mt-5 grid gap-5 md:grid-cols-2">
-            <Panel className="p-6">
+            {/* Real-Time Current Heart Rate Card */}
+            <Panel className="p-6 sm:p-7">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-sentinel-muted">Heart rate</p>
-                  <p className="mt-1 font-display text-2xl font-extrabold">
-                    {monitoring ? latest.heartRate : "—"} <span className="text-sm font-semibold text-sentinel-muted">BPM</span>
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className={cn("size-2 rounded-full", monitoring ? "bg-rose-500 animate-ping" : "bg-slate-300")} />
+                    <p className="text-xs font-bold uppercase tracking-wider text-rose-600">Current Reading</p>
+                  </div>
+                  <h3 className="mt-1 font-display text-lg font-extrabold text-slate-900">Current Heart Rate</h3>
                 </div>
-                <span className="grid size-10 place-items-center rounded-xl bg-rose-50 text-rose-500">
-                  <HeartPulse className="size-5" />
+                <span className={cn(
+                  "grid size-11 place-items-center rounded-2xl transition-transform",
+                  monitoring ? "bg-rose-50 text-rose-500 scale-105" : "bg-slate-100 text-slate-400"
+                )}>
+                  <HeartPulse className={cn("size-6", monitoring && "animate-pulse")} />
                 </span>
               </div>
-              <div className="mt-5">
-                {monitoring && readings.length > 1 ? (
-                  <Sparkline id="heart" values={readings.map((r) => r.heartRate)} color="#eb5b69" />
-                ) : (
-                  <div className="flex h-[112px] items-center justify-center rounded-2xl bg-slate-50">
-                    <p className="text-xs text-sentinel-muted">{monitoring ? "Collecting data…" : "Monitoring paused"}</p>
-                  </div>
+
+              <div className="mt-6 flex items-baseline gap-3">
+                <span className="font-display text-6xl font-black tracking-tight text-slate-900 sm:text-7xl">
+                  {monitoring ? latest.heartRate : "—"}
+                </span>
+                <span className="text-base font-bold text-sentinel-muted">BPM</span>
+                {monitoring && (
+                  <span
+                    className={cn(
+                      "ml-auto rounded-full px-3 py-1 text-xs font-bold",
+                      latest.heartRate < 60
+                        ? "bg-blue-50 text-blue-700"
+                        : latest.heartRate <= 100
+                        ? "bg-emerald-50 text-emerald-700"
+                        : "bg-rose-50 text-rose-700",
+                    )}
+                  >
+                    {latest.heartRate < 60
+                      ? "Resting / Low"
+                      : latest.heartRate <= 100
+                      ? "Normal Resting Range"
+                      : "Elevated Heart Rate"}
+                  </span>
                 )}
               </div>
-              <div className="mt-2 flex justify-between text-xs text-sentinel-muted">
-                <span>12 readings ago</span>
-                <span>Now</span>
+
+              {/* Real-time Heart Rate Physiological Gauge */}
+              <div className="mt-6">
+                <div className="relative h-2.5 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-400 via-emerald-400 to-rose-500 transition-all duration-300"
+                    style={{
+                      width: monitoring
+                        ? `${Math.min(100, Math.max(8, ((latest.heartRate - 40) / 120) * 100))}%`
+                        : "0%",
+                    }}
+                  />
+                </div>
+                <div className="mt-2.5 flex justify-between text-[11px] font-semibold text-sentinel-muted">
+                  <span>Low (&lt;60)</span>
+                  <span className="text-emerald-600 font-bold">Optimal (60–100 BPM)</span>
+                  <span>High (&gt;100)</span>
+                </div>
+              </div>
+
+              <div className="mt-6 border-t border-sentinel-line pt-4 flex items-center justify-between text-xs text-sentinel-muted">
+                <span>Signal: {monitoring ? "Continuous BLE pulse stream" : "Monitoring paused"}</span>
+                <span className="font-semibold text-slate-700">Instantaneous</span>
               </div>
             </Panel>
-            <Panel className="p-6">
+
+            {/* Real-Time Current Stress Score Card */}
+            <Panel className="p-6 sm:p-7">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-semibold text-sentinel-muted">Stress score</p>
-                  <p className="mt-1 font-display text-2xl font-extrabold">
-                    {monitoring ? latest.stressScore : "—"} <span className="text-sm font-semibold text-sentinel-muted">/ 100</span>
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className={cn("size-2 rounded-full", monitoring ? "bg-sentinel-teal animate-ping" : "bg-slate-300")} />
+                    <p className="text-xs font-bold uppercase tracking-wider text-sentinel-teal">Current Reading</p>
+                  </div>
+                  <h3 className="mt-1 font-display text-lg font-extrabold text-slate-900">Current Stress Score</h3>
                 </div>
-                <span className="grid size-10 place-items-center rounded-xl bg-sentinel-soft text-sentinel-teal">
-                  <Activity className="size-5" />
+                <span className={cn(
+                  "grid size-11 place-items-center rounded-2xl transition-transform",
+                  monitoring ? "bg-teal-50 text-sentinel-teal scale-105" : "bg-slate-100 text-slate-400"
+                )}>
+                  <Activity className="size-6" />
                 </span>
               </div>
-              <div className="mt-5">
-                {monitoring && readings.length > 1 ? (
-                  <Sparkline id="stress" values={readings.map((r) => r.stressScore)} color="#0c9488" />
-                ) : (
-                  <div className="flex h-[112px] items-center justify-center rounded-2xl bg-slate-50">
-                    <p className="text-xs text-sentinel-muted">{monitoring ? "Collecting data…" : "Monitoring paused"}</p>
-                  </div>
+
+              <div className="mt-6 flex items-baseline gap-3">
+                <span className="font-display text-6xl font-black tracking-tight text-slate-900 sm:text-7xl">
+                  {monitoring ? latest.stressScore : "—"}
+                </span>
+                <span className="text-base font-bold text-sentinel-muted">/ 100</span>
+                {monitoring && (
+                  <span
+                    className={cn(
+                      "ml-auto rounded-full px-3 py-1 text-xs font-bold",
+                      latest.state === "crisis"
+                        ? "bg-rose-50 text-rose-700"
+                        : latest.state === "elevated"
+                        ? "bg-amber-50 text-amber-700"
+                        : "bg-teal-50 text-teal-800",
+                    )}
+                  >
+                    {stateLabel(latest.state)} State
+                  </span>
                 )}
               </div>
-              <div className="mt-2 flex justify-between text-xs text-sentinel-muted">
-                <span>12 readings ago</span>
-                <span>Now</span>
+
+              {/* Real-time Stress Score 3-Zone Segmented Meter */}
+              <div className="mt-6">
+                <div className="relative h-2.5 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className={cn(
+                      "h-full transition-all duration-300",
+                      latest.state === "crisis"
+                        ? "bg-rose-500"
+                        : latest.state === "elevated"
+                        ? "bg-amber-500"
+                        : "bg-sentinel-teal",
+                    )}
+                    style={{
+                      width: monitoring ? `${Math.min(100, Math.max(5, latest.stressScore))}%` : "0%",
+                    }}
+                  />
+                </div>
+                <div className="mt-2.5 flex justify-between text-[11px] font-semibold text-sentinel-muted">
+                  <span className="text-teal-700 font-bold">Calm (0–59)</span>
+                  <span className="text-amber-600 font-bold">Elevated (60–79)</span>
+                  <span className="text-rose-600 font-bold">Crisis (80+)</span>
+                </div>
+              </div>
+
+              <div className="mt-6 border-t border-sentinel-line pt-4 flex items-center justify-between text-xs text-sentinel-muted">
+                <span>Hardware Level: <strong className="text-slate-800">{latest.stressLevel || "RELAXED"}</strong></span>
+                <span className="font-semibold text-sentinel-teal">Synced to RTDB</span>
               </div>
             </Panel>
+          </div>
+
+          {/* Historical Trends in Dashboard Banner */}
+          <div className="mt-5 rounded-2xl border border-sentinel-line bg-gradient-to-r from-slate-50 to-teal-50/30 p-5 sm:p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-sentinel-soft text-sentinel-teal">
+                  <LayoutDashboard className="size-5" />
+                </span>
+                <div>
+                  <h4 className="font-display text-sm font-extrabold text-slate-900">
+                    Looking for historical trends and time-series charts?
+                  </h4>
+                  <p className="mt-0.5 text-xs text-sentinel-muted">
+                    Dashboard displays historical trends over time with interactive time ranges (15m, 1h, 6h, 24h, 7d, All) and session records.
+                  </p>
+                </div>
+              </div>
+              {onNavigate && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onNavigate("overview")}
+                  className="rounded-xl border-sentinel-line text-sentinel-teal hover:bg-sentinel-soft hover:border-sentinel-teal font-bold shrink-0"
+                >
+                  View Historical Dashboard →
+                </Button>
+              )}
+            </div>
           </div>
         </>
       )}
@@ -1210,6 +1443,8 @@ function PatientPortal({
   connected,
   monitoring,
   storageStatus,
+  isRtdbConnected,
+  isOnline,
   onConnect,
   onToggleMonitoring,
   onSaveSample,
@@ -1237,6 +1472,8 @@ function PatientPortal({
   connected: boolean;
   monitoring: boolean;
   storageStatus: string;
+  isRtdbConnected: boolean;
+  isOnline: boolean;
   onConnect: () => void;
   onToggleMonitoring: () => void;
   onSaveSample: () => void;
@@ -1256,6 +1493,8 @@ function PatientPortal({
   const [mobileNav, setMobileNav] = useState(false);
   const currentLabel = navigation.find((item) => item.id === view)?.label ?? "Overview";
   const displayName = profile?.displayName || user?.email?.split("@")[0] || "Wellness User";
+  void readings;
+  void activeSessionStartedAt;
 
   return (
     <div className="min-h-screen lg:grid lg:grid-cols-[252px_1fr]">
@@ -1403,20 +1642,22 @@ function PatientPortal({
               events={events}
               insights={dashboardInsights}
               historicalReadings={historicalReadings}
-              activeSessionStartedAt={activeSessionStartedAt}
+              isRtdbConnected={isRtdbConnected}
+              isOnline={isOnline}
+              storageStatus={storageStatus}
               onNavigate={setView}
             />
           )}
           {view === "live" && (
             <LiveView
               latest={latest}
-              readings={readings}
               connected={connected}
               monitoring={monitoring}
               storageStatus={storageStatus}
               stressLevel={latest.stressLevel}
               onConnect={onConnect}
               onToggleMonitoring={onToggleMonitoring}
+              onNavigate={setView}
             />
           )}
           {view === "insights" && (
@@ -1696,6 +1937,8 @@ export default function SentinelApp() {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiStatus, setAiStatus] = useState("AI Wellness Assistant ready");
+  const [isRtdbConnected, setIsRtdbConnected] = useState(true);
+  const isOnline = useOnlineStatus();
 
   // Auth state
   const [user, setUser] = useState<FirebaseAuthState>(null);
@@ -1734,23 +1977,74 @@ export default function SentinelApp() {
     }
   }, [dashboardInsights]);
 
-  // Firebase Auth Observer — on auth change, go to portal
+  // Firebase Auth Observer — on auth change, sync with user-scoped Realtime Database
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     let stopRealtimeTelemetry: (() => void) | undefined;
     let stopRealtimeEvents: (() => void) | undefined;
+    let stopRealtimeConnection: (() => void) | undefined;
     void import("@/lib/firebase")
       .then((firebase) => {
+        stopRealtimeConnection = firebase.subscribeToRealtimeConnection(setIsRtdbConnected);
         unsubscribe = firebase.observeAuth((nextUser, nextProfile) => {
           stopRealtimeTelemetry?.();
           stopRealtimeEvents?.();
           setUser(nextUser);
           setProfile(nextProfile);
-          setStorageStatus(nextUser ? "Realtime Database sync enabled" : "Local buffer");
+          setStorageStatus(nextUser ? "Realtime Database synced" : "Local buffer");
           if (nextUser) {
             setMode("portal");
-            stopRealtimeTelemetry = firebase.subscribeToRealtimeTelemetry(setHistoricalReadings);
-            stopRealtimeEvents = firebase.subscribeToRealtimeEvents(setEvents);
+            // Load local cache immediately for instantaneous rendering
+            try {
+              const cachedTelemetry = JSON.parse(
+                localStorage.getItem(`sentinel_telemetry_${nextUser.uid}`) ?? "[]",
+              ) as SensorReading[];
+              if (Array.isArray(cachedTelemetry) && cachedTelemetry.length) {
+                setHistoricalReadings(cachedTelemetry);
+              }
+              const cachedEvents = JSON.parse(
+                localStorage.getItem(`sentinel_events_${nextUser.uid}`) ?? "[]",
+              ) as EventRecord[];
+              if (Array.isArray(cachedEvents) && cachedEvents.length) {
+                setEvents(cachedEvents);
+              }
+            } catch {
+              // ignore
+            }
+
+            // Realtime telemetry subscription beneath accounts/$uid
+            stopRealtimeTelemetry = firebase.subscribeToRealtimeTelemetry(
+              (cloudReadings) => {
+                setHistoricalReadings(cloudReadings);
+                try {
+                  localStorage.setItem(
+                    `sentinel_telemetry_${nextUser.uid}`,
+                    JSON.stringify(cloudReadings.slice(-1000)),
+                  );
+                } catch {}
+              },
+              (err) => {
+                console.warn("Realtime Database telemetry sync notice:", err);
+                setStorageStatus("Local buffer · Realtime Database unavailable");
+              },
+              nextUser.uid,
+            );
+
+            // Realtime events subscription beneath accounts/$uid
+            stopRealtimeEvents = firebase.subscribeToRealtimeEvents(
+              (cloudEvents) => {
+                setEvents(cloudEvents);
+                try {
+                  localStorage.setItem(
+                    `sentinel_events_${nextUser.uid}`,
+                    JSON.stringify(cloudEvents.slice(-500)),
+                  );
+                } catch {}
+              },
+              (err) => console.warn("Realtime Database events sync notice:", err),
+              nextUser.uid,
+            );
+
             void firebase.loadDashboardInsights(nextProfile?.patientId || nextUser.uid)
               .then((cloudInsights) => {
                 if (!cloudInsights.length) return;
@@ -1770,6 +2064,7 @@ export default function SentinelApp() {
       unsubscribe?.();
       stopRealtimeTelemetry?.();
       stopRealtimeEvents?.();
+      stopRealtimeConnection?.();
     };
   }, []);
 
@@ -1800,6 +2095,14 @@ export default function SentinelApp() {
       readingsRef.current = next;
       return next;
     });
+
+    // Auto-update historical telemetry immediately so Overview updates in real time
+    setHistoricalReadings((current) => {
+      const exists = current.some((r) => r.id === reading.id);
+      if (exists) return current;
+      return [...current, reading].sort((a, b) => a.capturedAt - b.capturedAt).slice(-2_000);
+    });
+
     if (reading.state !== "calm" && previousState.current === "calm") {
       const severity = reading.state === "crisis" ? "Crisis" : "Elevated";
       const event: EventRecord = {
@@ -1818,7 +2121,7 @@ export default function SentinelApp() {
       ]);
       if (user) {
         void import("@/lib/firebase")
-          .then((firebase) => firebase.saveRealtimeEvent(event))
+          .then((firebase) => firebase.saveRealtimeEvent(event, user.uid))
           .catch(() => setStorageStatus("Realtime Database sync unavailable"));
       }
       toast.warning(`${severity} physiological change detected`, {
@@ -1828,25 +2131,26 @@ export default function SentinelApp() {
     previousState.current = reading.state;
   }, [user]);
 
-  // Sync an account-scoped historical sample every five seconds while live.
+  // Sync an account-scoped historical sample every 3.5 seconds while live monitoring.
   useEffect(() => {
     if (mode !== "portal" || !monitoring) return;
     const interval = window.setInterval(() => {
       const reading = latestRef.current;
       if (!reading) return;
       try {
-        const stored = JSON.parse(localStorage.getItem("sentinel-telemetry") ?? "[]") as SensorReading[];
-        localStorage.setItem("sentinel-telemetry", JSON.stringify([...stored.slice(-239), reading]));
+        const key = user ? `sentinel_telemetry_${user.uid}` : "sentinel-telemetry";
+        const stored = JSON.parse(localStorage.getItem(key) ?? "[]") as SensorReading[];
+        localStorage.setItem(key, JSON.stringify([...stored.slice(-239), reading]));
       } catch {
         /* ignore storage limitations */
       }
       if (user) {
         void import("@/lib/firebase")
-          .then((firebase) => firebase.saveRealtimeTelemetrySample(reading))
+          .then((firebase) => firebase.saveRealtimeTelemetrySample(reading, user.uid))
           .then(() => setStorageStatus(`Realtime DB synced ${formatTime(Date.now())}`))
           .catch(() => setStorageStatus("Local buffer · Realtime Database unavailable"));
       }
-    }, 5_000);
+    }, 3_500);
     return () => window.clearInterval(interval);
   }, [mode, monitoring, user]);
 
@@ -1864,8 +2168,13 @@ export default function SentinelApp() {
     }
     try {
       const firebase = await import("@/lib/firebase");
-      await firebase.saveRealtimeTelemetrySample(reading);
+      await firebase.saveRealtimeTelemetrySample(reading, user.uid);
       void firebase.saveTelemetrySample(reading, profile?.patientId || user.uid);
+      setHistoricalReadings((current) => {
+        const exists = current.some((r) => r.id === reading.id);
+        if (exists) return current;
+        return [...current, reading].sort((a, b) => a.capturedAt - b.capturedAt).slice(-2_000);
+      });
       setStorageStatus(`Saved ${formatTime(Date.now())}`);
       toast.success("Stress reading recorded to cloud!", {
         description: `Saved: ${reading.heartRate} BPM, stress score ${reading.stressScore}/100.`,
@@ -1933,7 +2242,7 @@ export default function SentinelApp() {
     try {
       const firebase = await import("@/lib/firebase");
       if (user) {
-        void firebase.saveRealtimeTelemetrySamples(sessionReadings).catch(() => {
+        void firebase.saveRealtimeTelemetrySamples(sessionReadings, user.uid).catch(() => {
           setStorageStatus("Realtime Database sync unavailable");
         });
       }
@@ -2120,6 +2429,8 @@ export default function SentinelApp() {
           connected={Boolean(connection)}
           monitoring={monitoring}
           storageStatus={storageStatus}
+          isRtdbConnected={isRtdbConnected}
+          isOnline={isOnline}
           onConnect={connect}
           onToggleMonitoring={toggleMonitoring}
           onSaveSample={handleSaveSample}
