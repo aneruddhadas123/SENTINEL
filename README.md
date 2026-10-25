@@ -1,20 +1,20 @@
 # SENTINEL
 
-SENTINEL is a Congressional App Challenge prototype for proactive, person-centered physiological monitoring. A lightweight ESP32 wristband streams heart-rate and galvanic skin response (GSR) data to a browser over Bluetooth Low Energy. The web app helps an authorized caregiver notice sustained physiological change, review patterns, and consult general support guidance before a situation escalates.
+SENTINEL is a Congressional App Challenge prototype for proactive, person-centered physiological monitoring. A lightweight ESP32 device streams heart-rate and galvanic skin response (GSR) data to a browser over Bluetooth Low Energy. The web app helps an authorized caregiver notice sustained physiological change, review patterns, and consult general support guidance before a situation escalates.
 
 SENTINEL does **not** diagnose distress or predict autistic behavior. Physiological arousal can have many causes. The interface consistently asks caregivers to assess context and follow the individual’s established care and emergency plans.
 
 ## Included experiences
 
 - Caregiver overview with current state, trends, checkpoints, and recent events
-- Live Web Bluetooth connection to the `PulseGuard` ESP32 wristband
+- Live Web Bluetooth connection to the `SENTINEL` ESP32 device
 - Smooth demo-data mode for judging when hardware is unavailable
 - One-second live visualization with 30-second historical storage
 - Personalized five-minute baseline calibration flow
 - Tiered event history, CSV export, caregiver roster, and alert routing
 - Firebase Authentication and Cloud Firestore integration
 - Firebase AI Logic assistant using the **Gemini Developer API** through `GoogleAIBackend` (not Vertex AI)
-- Individual wellness portal with calm check-ins, progress, and wristband status
+- Individual wellness portal with calm check-ins, progress, and device status
 - Browser notifications for newly elevated or crisis-level physiological change
 - Anime.js motion for page transitions, live status, charts, metrics, and assistant states
 - WebMCP tools for reading current status and opening calibration
@@ -33,7 +33,6 @@ MAX30105 + GSR sensor
                            30-second samples  Gemini Developer API
 ```
 
-The app remains functional in local demo mode if Firebase services, App Check, or the wristband are unavailable.
 
 ## Firebase setup
 
@@ -64,9 +63,9 @@ Example membership document:
 
 Firestore rules require this membership before the account can read or append Alex’s telemetry. Until it exists, the app safely retains the latest samples in its local demo buffer.
 
-## Wristband
+## SENTINEL DEVICE
 
-Flash `hardware/PulseGuard.ino` to an ESP32 with the MAX30105 and GSR sensor connected. The sketch advertises as `PulseGuard` and streams once per second. The web app aggregates the stream and saves one reading every 30 seconds.
+Flash `hardware/SENTINELDEVICE.ino` to an ESP32 with the MAX30105 and GSR sensor connected. The sketch advertises as `PulseGuard` and streams once per second. The web app aggregates the stream and saves one reading every 30 seconds.
 
 The included firmware improves two details from the first prototype:
 
