@@ -25,7 +25,7 @@ SENTINEL does **not** diagnose distress or predict autistic behavior. Physiologi
 MAX30105 + GSR sensor
         │
         ▼
- ESP32 PulseGuard ── BLE ──► Chrome / Edge web app
+ ESP32 SENTINEL ── BLE ──► Chrome / Edge web app
                                   │
                  ┌────────────────┼────────────────┐
                  ▼                ▼                ▼
@@ -65,7 +65,7 @@ Firestore rules require this membership before the account can read or append Al
 
 ## SENTINEL DEVICE
 
-Flash `hardware/SENTINELDEVICE.ino` to an ESP32 with the MAX30105 and GSR sensor connected. The sketch advertises as `PulseGuard` and streams once per second. The web app aggregates the stream and saves one reading every 30 seconds.
+Flash `hardware/SENTINELDEVICE.ino` to an ESP32 with the MAX30105 and GSR sensor connected. The sketch advertises as `SENTINEL` and streams once per second. The web app aggregates the stream and saves one reading every 30 seconds.
 
 The included firmware improves two details from the first prototype:
 
